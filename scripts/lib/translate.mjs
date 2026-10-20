@@ -26,10 +26,10 @@ async function translateLines(lines, sl, tl) {
 function makeBatches(items) {
   const byLang = new Map();
   const batches = [];
-  let singles = 0;
+  const singles = [];
   for (const e of items) {
     if (!e.lang) {
-      if (singles++ < MAX_SINGLES) batches.push({ sl: 'auto', items: [e] });
+      if (singles.length < MAX_SINGLES) singles.push({ sl: 'auto', items: [e] });
       continue;
     }
     if (!byLang.has(e.lang)) byLang.set(e.lang, []);
@@ -47,7 +47,7 @@ function makeBatches(items) {
     }
     if (cur.length) batches.push({ sl, items: cur });
   }
-  return batches;
+  return [...batches, ...singles]; // önce dili bilinen gruplar (asıl haberler), tekler en sona
 }
 
 // Bir haberin henüz çevrilmemiş hedef dilleri (yarıda kalan çeviriler sonraki çalıştırmada tamamlanır).
