@@ -111,8 +111,13 @@ function ago(t) {
   return h < 24 ? T.hour(h) : T.day(Math.floor(h / 24));
 }
 
+// Başlık seçili dilde: haberin kendi dili buysa özgün başlık, değilse hazır çeviri, o da yoksa özgün başlık.
+const isTranslated = (e) => e.lang !== state.lang && !!e.tt?.[state.lang];
+const titleOf = (e) => (isTranslated(e) ? e.tt[state.lang] : e.title);
+const origNote = (e) => (isTranslated(e) ? T.orig(T.langs[newsLangOf(e)] || '') : '');
+
 function translateLink(e) {
-  if (e.lang === state.lang) return '';
+  if (e.lang === state.lang || isTranslated(e)) return '';
   const url = `https://translate.google.com/?sl=auto&tl=${state.lang}&text=${encodeURIComponent(e.title)}&op=translate`;
   return `<a href="${esc(url)}" target="_blank" rel="noopener">${T.translate}</a>`;
 }
@@ -122,7 +127,8 @@ function sourceLink(e) {
 }
 
 function popupHtml(e) {
-  return `<div class="pop-title" dir="auto"><i class="ti ti-${cat(e).icon}" style="color:${cat(e).color}"></i> ${esc(e.title)}</div>
+  return `<div class="pop-title" dir="auto"><i class="ti ti-${cat(e).icon}" style="color:${cat(e).color}"></i> ${esc(titleOf(e))}</div>
+    ${isTranslated(e) ? `<div class="pop-meta" dir="auto">${esc(origNote(e))}: ${esc(e.title)}</div>` : ''}
     ${e.text ? `<div class="pop-text" dir="auto">${esc(e.text.slice(0, 300))}${e.text.length > 300 ? '…' : ''}</div>` : ''}
     <div class="pop-meta">${esc(placeName(e))} · ${ago(e.t)} · ${T.cats[e.cat] || ''}</div>
     <div class="pop-meta">${T.source}: ${sourceLink(e)} ${translateLink(e) ? '· ' + translateLink(e) : ''}</div>`;
@@ -141,7 +147,7 @@ function inRange() {
 function filtered() {
   const q = state.q.toLowerCase();
   return inRange().filter((e) => !state.off.has(e.cat) &&
-    (!q || `${e.title} ${e.text || ''} ${placeName(e)} ${e.place || ''} ${e.src || ''}`.toLowerCase().includes(q)));
+    (!q || `${e.title} ${titleOf(e)} ${e.text || ''} ${placeName(e)} ${e.place || ''} ${e.src || ''}`.toLowerCase().includes(q)));
 }
 
 // Katmanlar paneli: her kategori için açma/kapama kutusu ve olay sayısı.
@@ -182,8 +188,8 @@ function renderList(list) {
         <span class="when">${ago(e.t)}</span>
         ${e.url ? `<a class="src" href="${esc(e.url)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i>${T.source}</a>` : ''}
       </div>
-      <div class="title" dir="auto">${e.isNew ? `<span class="badge">${T.badge}</span>` : ''}${esc(e.title)}</div>
-      <div class="meta">${esc(placeName(e))} · ${esc(e.src || '')}${translateLink(e) ? ' · ' + translateLink(e) : ''}</div>
+      <div class="title" dir="auto" ${isTranslated(e) ? `title="${esc(e.title)}"` : ''}>${e.isNew ? `<span class="badge">${T.badge}</span>` : ''}${esc(titleOf(e))}</div>
+      <div class="meta">${esc(placeName(e))} · ${esc(e.src || '')}${origNote(e) ? ' · ' + esc(origNote(e)) : ''}${translateLink(e) ? ' · ' + translateLink(e) : ''}</div>
     </li>`).join('');
 }
 

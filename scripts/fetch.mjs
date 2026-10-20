@@ -3,6 +3,7 @@
 //   - RSS: Türkçe, Kurmancî, Soranî, Arapça, Farsça, İngilizce haber siteleri (scripts/sources.json)
 //   - Telegram: herkese açık kanallar (scripts/sources.json)
 //   - USGS: depremler
+//   - Başlıklar sitenin 5 diline çevrilir (Türkçe, Kurmancî, Soranî, İngilizce, Arapça)
 //
 // Kullanım:  node scripts/fetch.mjs
 // Ortam değişkenleri (isteğe bağlı):
@@ -17,12 +18,14 @@ import { fetchGdelt } from './lib/gdelt.mjs';
 import { fetchFeeds } from './lib/feeds.mjs';
 import { placeNames } from './lib/geo.mjs';
 import { get } from './lib/http.mjs';
+import { translateTitles } from './lib/translate.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'data');
 const HOURS = Number(process.env.HOURS || 6);
 const KEEP_HOURS = Number(process.env.KEEP_HOURS || 48);
 const MAX_EVENTS = Number(process.env.MAX_EVENTS || 6000);
+const MAX_TRANSLATE = Number(process.env.MAX_TRANSLATE || 1200); // bir çalıştırmada çevrilecek en fazla başlık
 
 const SEVERITY = ['news', 'politics', 'protest', 'military', 'security', 'attack', 'clash', 'artillery', 'bombing', 'airstrike', 'massviolence'];
 
@@ -40,7 +43,7 @@ function merge(oldEvents, newEvents) {
       : prev.kind !== 'gdelt' && e.kind === 'gdelt' ? false
       : prev.kind === 'gdelt' ? SEVERITY.indexOf(e.cat) > SEVERITY.indexOf(prev.cat)
       : true;
-    if (better) byKey.set(key, { ...e, t: Math.min(e.t, prev.t) });
+    if (better) byKey.set(key, { ...e, t: Math.min(e.t, prev.t), tt: e.tt || (e.title === prev.title ? prev.tt : undefined) });
   }
   return [...byKey.values()];
 }
@@ -80,6 +83,8 @@ async function main() {
     .filter((e) => e.t >= cutoff && e.title)
     .sort((a, b) => b.t - a.t)
     .slice(0, MAX_EVENTS);
+
+  await translateTitles(events, MAX_TRANSLATE);
 
   const json = JSON.stringify({ updated: Date.now(), gdeltLast: gdelt.latest, events });
   await fs.mkdir(DATA, { recursive: true });
