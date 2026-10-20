@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="tr" dir="ltr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Canlı Olay Haritası</title>
+  <meta name="description" content="Türkiye, Kürdistan ve Orta Doğu'daki gelişmeleri canlı gösteren ücretsiz harita">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="logo"><span class="pulse"></span><span id="brandText"></span></div>
+      <span id="today" class="today"></span>
+      <nav id="regions" class="regions"></nav>
+      <button id="toggleFeed" class="icon-btn mobile-only" aria-label="☰"><i class="ti ti-list"></i></button>
+    </header>
+
+    <div class="mapwrap">
+      <div id="map"></div>
+      <div id="layersPanel" class="popover layers-pop" hidden>
+        <div id="chips" class="layer-list"></div>
+        <label class="check"><input id="inView" type="checkbox" checked> <span id="inViewLabel"></span></label>
+      </div>
+    </div>
+
+    <aside id="feed" class="feed">
+      <div class="feed-tabs">
+        <button class="ftab active" data-panel="" id="tabFeed"><i class="ti ti-news"></i><span></span></button>
+        <button class="ftab" data-panel="lang" id="tabLang"><i class="ti ti-language"></i><span></span></button>
+        <button class="ftab" data-panel="time" id="tabTime"><i class="ti ti-clock"></i><span></span></button>
+        <button class="ftab" data-panel="layers" id="tabLayers"><i class="ti ti-stack-2"></i><span></span></button>
+      </div>
+
+      <div id="langPanel" class="feed-panel" hidden>
+        <div id="uiLangs" class="seg"></div>
+        <label class="row"><span id="newsLangLabel"></span><select id="newsLang"></select></label>
+      </div>
+      <div id="timePanel" class="feed-panel" hidden>
+        <div id="ranges" class="seg"></div>
+      </div>
+
+      <div class="feed-search">
+        <i class="ti ti-search"></i>
+        <input id="search" type="search" autocomplete="off">
+      </div>
+      <div id="status" class="status"></div>
+      <ol id="list" class="list"></ol>
+    </aside>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.min.js"></script>
+  <script src="i18n.js"></script>
+  <script src="data/places.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

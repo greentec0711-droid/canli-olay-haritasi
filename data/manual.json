@@ -1,0 +1,13 @@
+{
+  "_aciklama": "Buraya kendi olaylarınızı elle ekleyin. cat boş bırakılırsa 📌 Editör olarak görünür; ya da airstrike, clash, protest gibi bir kategori yazın.",
+  "events": [
+    {
+      "title": "Örnek: elle eklenmiş olay",
+      "place": "Ankara, Türkiye",
+      "lat": 39.9334,
+      "lon": 32.8597,
+      "time": "2026-10-20T09:00:00Z",
+      "url": ""
+    }
+  ]
+}
