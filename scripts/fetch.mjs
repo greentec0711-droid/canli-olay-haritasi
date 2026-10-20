@@ -25,7 +25,7 @@ const DATA = path.join(ROOT, 'data');
 const HOURS = Number(process.env.HOURS || 6);
 const KEEP_HOURS = Number(process.env.KEEP_HOURS || 48);
 const MAX_EVENTS = Number(process.env.MAX_EVENTS || 6000);
-const MAX_TRANSLATE = Number(process.env.MAX_TRANSLATE || 1200); // bir çalıştırmada çevrilecek en fazla başlık
+const MAX_TRANSLATE = Number(process.env.MAX_TRANSLATE || 400); // bir çalıştırmada çevrilecek en fazla başlık
 
 const SEVERITY = ['news', 'politics', 'protest', 'military', 'security', 'attack', 'clash', 'artillery', 'bombing', 'airstrike', 'massviolence'];
 

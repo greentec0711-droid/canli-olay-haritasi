@@ -6,6 +6,8 @@ const TARGETS = ['tr', 'ku', 'ckb', 'en', 'ar'];
 const GOOGLE_CODE = { he: 'iw' };
 const MAX_CHARS = 4000;
 const MAX_LINES = 40;
+const MAX_SINGLES = 10; // dili bilinmeyen başlıklar tek tek gider; çalıştırma başına sınırlı tutulur
+const PAUSE_MS = 400;   // istekler arası bekleme: ücretsiz uç çok sık istekte geçici olarak engelliyor (429)
 
 async function translateLines(lines, sl, tl) {
   const res = await fetch(`https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&sl=${GOOGLE_CODE[sl] || sl}&tl=${tl}`, {
@@ -24,8 +26,12 @@ async function translateLines(lines, sl, tl) {
 function makeBatches(items) {
   const byLang = new Map();
   const batches = [];
+  let singles = 0;
   for (const e of items) {
-    if (!e.lang) { batches.push({ sl: 'auto', items: [e] }); continue; }
+    if (!e.lang) {
+      if (singles++ < MAX_SINGLES) batches.push({ sl: 'auto', items: [e] });
+      continue;
+    }
     if (!byLang.has(e.lang)) byLang.set(e.lang, []);
     byLang.get(e.lang).push(e);
   }
@@ -44,33 +50,38 @@ function makeBatches(items) {
   return batches;
 }
 
+// Bir haberin henüz çevrilmemiş hedef dilleri (yarıda kalan çeviriler sonraki çalıştırmada tamamlanır).
+const missing = (e) => TARGETS.filter((tl) => tl !== e.lang && !e.tt?.[tl]);
+
 export async function translateTitles(events, maxItems) {
   // Önce RSS/Telegram (daha iyi başlıklar), sonra en yeni GDELT kayıtları.
   const rank = (e) => (e.kind === 'gdelt' ? 1 : 0);
   const todo = events
-    .filter((e) => !e.tt && e.title && e.kind !== 'usgs')
+    .filter((e) => e.title && e.kind !== 'usgs' && missing(e).length)
     .sort((a, b) => rank(a) - rank(b) || b.t - a.t)
     .slice(0, maxItems);
   if (!todo.length) return;
 
   const jobs = [];
   for (const b of makeBatches(todo)) {
-    for (const tl of TARGETS) if (tl !== b.sl) jobs.push({ ...b, tl });
+    for (const tl of TARGETS) {
+      const items = b.items.filter((e) => missing(e).includes(tl));
+      if (items.length) jobs.push({ sl: b.sl, items, tl });
+    }
   }
-  let done = 0, blocked = false, i = 0;
-  await Promise.all(Array.from({ length: 3 }, async () => {
-    while (i < jobs.length && !blocked) {
-      const job = jobs[i++];
-      try {
-        const out = await translateLines(job.items.map((e) => e.title.replace(/\s+/g, ' ')), job.sl, job.tl);
-        if (!out) continue;
+  let done = 0;
+  for (const job of jobs) {
+    try {
+      const out = await translateLines(job.items.map((e) => e.title.replace(/\s+/g, ' ')), job.sl, job.tl);
+      if (out) {
         job.items.forEach((e, k) => { if (out[k]) (e.tt ||= {})[job.tl] = out[k]; });
         done++;
-      } catch (err) {
-        console.warn('  Çeviri durdu:', err.message);
-        blocked = true;
       }
+    } catch (err) {
+      console.warn('  Çeviri durdu, kalanlar sonraki çalıştırmada çevrilecek:', err.message);
+      break;
     }
-  }));
+    await new Promise((r) => setTimeout(r, PAUSE_MS));
+  }
   console.log(`Çeviri: ${todo.length} başlık, ${done}/${jobs.length} istek başarılı`);
 }
