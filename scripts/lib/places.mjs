@@ -28,7 +28,8 @@ export const PLACES = [
   [39.93, 32.86, 2, 'Ankara', 'Ankara', 'Enqere', 'ئەنقەرە', 'أنقرة', 'Enqereyê;انقره;آنکارا'],
   [36.90, 30.70, 2, 'Antalya', 'Antalya', 'Antalya', 'ئەنتاڵیا', 'أنطاليا', ''],
   [41.18, 41.82, 2, 'Artvin', 'Artvin', '', '', 'أرتفين', ''],
-  [37.85, 27.85, 2, 'Aydın', 'Aydin', '', '', 'آيدين', '!cs'],
+  // "Aydın" yaygın bir ad/soyad: sadece "Aydın ili" yazımı eşleşir.
+  [37.85, 27.85, 2, '=Aydın ili', 'Aydin Province', '', '', '', ''],
   [39.65, 27.88, 2, 'Balıkesir', 'Balikesir', '', '', 'باليكسير', ''],
   [40.14, 29.98, 2, 'Bilecik', 'Bilecik', '', '', '', ''],
   [38.88, 40.50, 2, 'Bingöl', 'Bingol', 'Çewlîg', 'چەولیگ', 'بينغول', 'Cewlig;Çewlîgê'],

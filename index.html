@@ -5,10 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Canlı Olay Haritası</title>
   <meta name="description" content="Türkiye, Kürdistan ve Orta Doğu'daki gelişmeleri canlı gösteren ücretsiz harita">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.min.css">
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/MarkerCluster.Default.min.css">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.css">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
   <link rel="stylesheet" href="style.css">
 </head>
@@ -23,10 +20,28 @@
 
     <div class="mapwrap">
       <div id="map"></div>
-      <div id="layersPanel" class="popover layers-pop" hidden>
-        <div id="chips" class="layer-list"></div>
-        <label class="check"><input id="inView" type="checkbox" checked> <span id="inViewLabel"></span></label>
-      </div>
+
+      <!-- Sürüklenebilir paneller: başlığından tutup taşınır, katlanır; yerleri tarayıcıda hatırlanır. -->
+      <section id="infoPanel" class="panel info-panel" hidden>
+        <header class="panel-head">
+          <i class="ti ti-info-circle"></i><span id="infoTitle"></span>
+          <button class="panel-btn" data-act="collapse" aria-label="−"><i class="ti ti-minus"></i></button>
+          <button class="panel-btn" data-act="close" aria-label="×"><i class="ti ti-x"></i></button>
+        </header>
+        <div id="infoBody" class="panel-body"></div>
+      </section>
+
+      <section id="layersPanel" class="panel layers-panel" hidden>
+        <header class="panel-head">
+          <i class="ti ti-stack-2"></i><span id="layersTitle"></span>
+          <button class="panel-btn" data-act="collapse" aria-label="−"><i class="ti ti-minus"></i></button>
+          <button class="panel-btn" data-act="close" aria-label="×"><i class="ti ti-x"></i></button>
+        </header>
+        <div class="panel-body">
+          <div id="chips" class="layer-list"></div>
+          <label class="check"><input id="inView" type="checkbox" checked> <span id="inViewLabel"></span></label>
+        </div>
+      </section>
     </div>
 
     <aside id="feed" class="feed">
@@ -55,10 +70,7 @@
     </aside>
   </div>
 
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet.markercluster/1.5.3/leaflet.markercluster.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/@maplibre/maplibre-gl-leaflet@0.0.22/leaflet-maplibre-gl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
   <script src="i18n.js"></script>
   <script src="data/places.js"></script>
   <script src="app.js"></script>

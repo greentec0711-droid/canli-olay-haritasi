@@ -1,4 +1,5 @@
 // Canlı Olay Haritası — tamamen statik; veriyi data/events.js, data/places.js ve data/manual.json'dan okur.
+// Harita: MapLibre GL (küre görünümü), OpenFreeMap altlığı.
 
 // Her kategori: renkli daire içinde beyaz simge (Tabler Icons).
 const CATS = {
@@ -21,7 +22,9 @@ const CATS = {
 // Afetlerde simge türe, renk GDACS alarm düzeyine göre.
 const DISASTER_ICONS = { flood: 'ripple', cyclone: 'tornado', volcano: 'volcano', wildfire: 'flame', drought: 'sun-high' };
 const ALERT_COLORS = { green: '#2f9e44', orange: '#e8590c', red: '#c92a2a' };
+const ISS_CAT = { icon: 'satellite', color: '#7048e8' };
 const NEWS_LANGS = ['tr', 'ku', 'ckb', 'ar', 'fa', 'en', 'other'];
+const REFRESH_MS = 60e3;
 
 // Haber akışındaki konu filtreleri.
 const CONFLICT = new Set(['massviolence', 'airstrike', 'bombing', 'artillery', 'clash', 'attack', 'security', 'military']);
@@ -37,16 +40,27 @@ const TOPICS = {
   disaster: (e) => e.cat === 'earthquake' || e.cat === 'disaster',
   space: (e) => e.cat === 'launch',
 };
-const REFRESH_MS = 60e3;
+
+// Üstteki bölge sekmeleri: [[batı, güney], [doğu, kuzey]]
+const REGIONS = {
+  all: [[25, 24], [63, 42.5]],
+  tr: [[25.6, 35.8], [44.9, 42.2]],
+  kurdistan: [[37.5, 34], [48, 39.5]],
+  sy: [[35.6, 32.2], [42.5, 37.4]],
+  iq: [[38.7, 29], [48.7, 37.4]],
+  ir: [[44, 25], [63.4, 39.8]],
+  il: [[34.1, 29.4], [36.7, 34.7]],
+  cy: [[32.2, 34.5], [34.7, 35.8]],
+};
 
 const $ = (id) => document.getElementById(id);
-// Paylaşılabilir bağlantılar: ?lang=ckb&region=kurdistan gibi.
+// Paylaşılabilir bağlantılar: ?lang=ckb&region=kurdistan&topic=kurdistan gibi.
 const PARAMS = new URLSearchParams(location.search);
 const state = {
   events: [], updated: 0, fresh: 0, off: new Set(), q: '', hours: 6, inView: true, activeId: null,
   lang: pickLang(), newsLang: 'all', region: null, panel: null, topic: 'all',
 };
-const markers = new Map();
+const byId = new Map();
 const PLACES = window.__PLACES__ || [];
 let T = I18N[state.lang];
 
@@ -61,76 +75,207 @@ function pickLang() {
   return 'tr';
 }
 
-// --- Harita: OpenFreeMap koyu altlık (OpenStreetMap verisi), ücretsiz, anahtarsız, limitsiz ---
-const map = L.map('map', { worldCopyJump: true, zoomControl: false, minZoom: 2, maxZoom: 18 }).setView([36.5, 40], 5);
-L.control.zoom({ position: 'bottomleft' }).addTo(map);
-// Sol alttaki katman düğmesi: kategori katmanlarını açıp kapatan paneli açar.
-const LayersButton = L.Control.extend({
-  options: { position: 'bottomleft' },
-  onAdd() {
-    const el = L.DomUtil.create('div', 'leaflet-control layers-btn');
-    el.id = 'layersBtn';
-    el.innerHTML = '<i class="ti ti-stack-2"></i>';
-    L.DomEvent.disableClickPropagation(el);
-    L.DomEvent.on(el, 'click', () => togglePanel('layers'));
-    return el;
+// ---------------- Harita ----------------
+
+// Arapça harfli (Soranî, Arapça, Farsça) harita yazılarının doğru birleşmesi için.
+try { maplibregl.setRTLTextPlugin('https://cdn.jsdelivr.net/npm/@mapbox/mapbox-gl-rtl-text@0.3.0/dist/mapbox-gl-rtl-text.js', true); } catch {}
+
+const map = new maplibregl.Map({
+  container: 'map',
+  style: 'https://tiles.openfreemap.org/styles/dark',
+  center: [40, 36.5],
+  zoom: 3.4,
+  minZoom: 0.8,
+  maxZoom: 17,
+  attributionControl: {
+    compact: true,
+    customAttribution: 'GDELT, USGS, GDACS, Launch Library, wheretheiss.at, RSS, Telegram',
   },
 });
-new LayersButton().addTo(map);
-// Arapça harfli (Soranî, Arapça, Farsça) harita yazılarının doğru birleşmesi için.
-try { maplibregl.setRTLTextPlugin('https://cdn.jsdelivr.net/npm/@mapbox/mapbox-gl-rtl-text@0.2.3/mapbox-gl-rtl-text.min.js', true); } catch {}
-const base = L.maplibreGL({
-  style: 'https://tiles.openfreemap.org/styles/dark',
-  attribution: '<a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · GDELT, USGS, GDACS, Launch Library, wheretheiss.at, RSS, Telegram',
-}).addTo(map);
-const gl = base.getMaplibreMap();
-// Hazır koyu tema neredeyse siyah; kara, deniz, sınır ve yazıları biraz açıyoruz.
-gl.on('load', () => {
-  const set = (id, prop, val) => { if (gl.getLayer(id)) gl.setPaintProperty(id, prop, val); };
+map.addControl(new maplibregl.NavigationControl({ showCompass: true, visualizePitch: false }), 'bottom-left');
+map.addControl(new maplibregl.GlobeControl(), 'bottom-left');
+
+// Sol alttaki katman düğmesi ve panel düzenini sıfırlama düğmesi.
+class ButtonsControl {
+  onAdd() {
+    const el = document.createElement('div');
+    el.className = 'maplibregl-ctrl maplibregl-ctrl-group';
+    el.innerHTML = `<button id="layersBtn" type="button"><i class="ti ti-stack-2"></i></button>
+      <button id="resetPanelsBtn" type="button"><i class="ti ti-layout-off"></i></button>`;
+    el.querySelector('#layersBtn').addEventListener('click', () => togglePanel('layers'));
+    el.querySelector('#resetPanelsBtn').addEventListener('click', resetPanels);
+    return el;
+  }
+  onRemove() {}
+}
+map.addControl(new ButtonsControl(), 'bottom-left');
+
+// Harita üzerindeki şehir/ülke adlarını seçili dilde göster; o dilde ad yoksa sıradaki dile düş.
+const MAP_LANGS = { tr: ['tr', 'en'], ku: ['ku', 'kmr', 'en'], ckb: ['ckb', 'ar', 'fa'], en: ['en'], ar: ['ar', 'en'] };
+function applyMapLanguage() {
+  const style = map.getStyle();
+  if (!style) return;
+  const field = ['coalesce', ...MAP_LANGS[state.lang].map((l) => ['get', `name:${l}`]), ['get', 'name']];
+  for (const l of style.layers) {
+    if (l.type === 'symbol' && /^(place_|water_name)/.test(l.id)) {
+      try { map.setLayoutProperty(l.id, 'text-field', field); } catch {}
+    }
+  }
+}
+
+let mapReady = false;
+map.on('style.load', () => {
+  map.setProjection({ type: 'globe' });
+  // Uzaktan bakınca Dünya'nın çevresinde ince bir atmosfer parıltısı.
+  try { map.setSky({ 'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 1, 5, 1, 7, 0] }); } catch {}
+  // Hazır koyu tema neredeyse siyah; kara, deniz, sınır ve yazıları biraz açıyoruz.
+  const set = (id, prop, val) => { if (map.getLayer(id)) map.setPaintProperty(id, prop, val); };
   set('background', 'background-color', '#262c37');
   set('water', 'fill-color', '#121821');
   set('waterway', 'line-color', '#121821');
   set('boundary_country_z0-4', 'line-color', '#6b7385');
   set('boundary_country_z5-', 'line-color', '#6b7385');
   set('boundary_state', 'line-color', '#454c5a');
-  for (const l of gl.getStyle().layers) if (l.id.startsWith('place_')) set(l.id, 'text-color', '#a9b0bf');
+  for (const l of map.getStyle().layers) if (l.id.startsWith('place_')) set(l.id, 'text-color', '#a9b0bf');
   applyMapLanguage();
+  addEventLayers();
+  mapReady = true;
+  render();
 });
-// Harita üzerindeki şehir/ülke adlarını seçili dilde göster; o dilde ad yoksa sıradaki dile düş.
-const MAP_LANGS = { tr: ['tr', 'en'], ku: ['ku', 'kmr', 'en'], ckb: ['ckb', 'ar', 'fa'], en: ['en'], ar: ['ar', 'en'] };
-function applyMapLanguage() {
-  const style = gl.getStyle();
-  if (!style) return;
-  const field = ['coalesce', ...MAP_LANGS[state.lang].map((l) => ['get', `name:${l}`]), ['get', 'name']];
-  for (const l of style.layers) {
-    if (l.type === 'symbol' && /^(place_|water_name)/.test(l.id)) {
-      try { gl.setLayoutProperty(l.id, 'text-field', field); } catch {}
-    }
+// Kaynak bilgisi haritanın altını kaplamasın: başta kapalı, (i) düğmesiyle açılır.
+map.once('load', () => document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show'));
+
+// Olaylar tek bir GeoJSON kaynağında; yakın olaylar sayılı kümeler hâlinde birleşir.
+function addEventLayers() {
+  map.addSource('events', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, cluster: true, clusterRadius: 42, clusterMaxZoom: 8 });
+  map.addLayer({
+    id: 'clusters', type: 'circle', source: 'events', filter: ['has', 'point_count'],
+    paint: {
+      'circle-color': 'rgba(229,72,77,0.88)',
+      'circle-radius': ['step', ['get', 'point_count'], 13, 10, 16, 50, 20, 200, 25],
+      'circle-stroke-width': 6,
+      'circle-stroke-color': 'rgba(229,72,77,0.28)',
+    },
+  });
+  map.addLayer({
+    id: 'cluster-count', type: 'symbol', source: 'events', filter: ['has', 'point_count'],
+    layout: { 'text-field': ['get', 'point_count_abbreviated'], 'text-font': ['Noto Sans Regular'], 'text-size': 12, 'text-allow-overlap': true },
+    paint: { 'text-color': '#ffffff' },
+  });
+  map.addLayer({
+    id: 'active', type: 'circle', source: 'events', filter: ['==', ['get', 'id'], ''],
+    paint: { 'circle-radius': 21, 'circle-color': 'rgba(255,255,255,0.18)', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2 },
+  });
+  map.addLayer({
+    id: 'points', type: 'symbol', source: 'events', filter: ['!', ['has', 'point_count']],
+    layout: { 'icon-image': ['get', 'icon'], 'icon-allow-overlap': true, 'icon-ignore-placement': true },
+  });
+
+  map.on('click', 'points', (ev) => {
+    const e = byId.get(ev.features[0].properties.id);
+    if (e) select(e, false);
+  });
+  map.on('click', 'clusters', async (ev) => {
+    const f = ev.features[0];
+    const zoom = await map.getSource('events').getClusterExpansionZoom(f.properties.cluster_id);
+    map.easeTo({ center: f.geometry.coordinates, zoom: zoom + 0.2 });
+  });
+  for (const id of ['points', 'clusters']) {
+    map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
   }
 }
 
-const cluster = L.markerClusterGroup({ maxClusterRadius: 40, showCoverageOnHover: false, spiderfyOnMaxZoom: true });
-map.addLayer(cluster);
+// Haritadaki simgeler: renkli daire + beyaz Tabler simgesi, tuvalde bir kez çizilip haritaya eklenir.
+const glyphCache = new Map();
+function glyphOf(name) {
+  if (!glyphCache.has(name)) {
+    const i = document.createElement('i');
+    i.className = `ti ti-${name}`;
+    i.style.cssText = 'position:absolute;visibility:hidden';
+    document.body.appendChild(i);
+    glyphCache.set(name, getComputedStyle(i, '::before').content.replace(/^["']|["']$/g, ''));
+    i.remove();
+  }
+  return glyphCache.get(name);
+}
+function ensureIcon(icon, color) {
+  const key = `${icon}|${color}`;
+  if (map.hasImage(key)) return key;
+  const r = 2, size = 30 * r;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.shadowColor = 'rgba(0,0,0,0.55)';
+  ctx.shadowBlur = 4 * r;
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, 12 * r, 0, Math.PI * 2);
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.shadowColor = 'transparent';
+  ctx.lineWidth = 2 * r;
+  ctx.strokeStyle = '#ffffff';
+  ctx.stroke();
+  ctx.fillStyle = '#ffffff';
+  ctx.font = `${15 * r}px tabler-icons`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(glyphOf(icon), size / 2, size / 2 + r);
+  map.addImage(key, ctx.getImageData(0, 0, size, size), { pixelRatio: r });
+  return key;
+}
+
+// Aynı noktadaki olaylar (ör. şehir merkezi) üst üste binmesin diye küçük bir çembere dağıtılır.
+function spread(list) {
+  const groups = new Map();
+  for (const e of list) {
+    const k = `${e.lat.toFixed(3)},${e.lon.toFixed(3)}`;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(e);
+  }
+  const pos = new Map();
+  for (const g of groups.values()) {
+    g.forEach((e, i) => {
+      if (g.length === 1) { pos.set(e.id, [e.lon, e.lat]); return; }
+      const ring = 0.012 * Math.sqrt(g.length);
+      const a = (i / g.length) * Math.PI * 2;
+      pos.set(e.id, [e.lon + ring * Math.cos(a), e.lat + ring * Math.sin(a)]);
+    });
+  }
+  return pos;
+}
+
+function renderMarkers(list) {
+  if (!mapReady) return;
+  const pos = spread(list);
+  map.getSource('events').setData({
+    type: 'FeatureCollection',
+    features: list.map((e) => ({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: pos.get(e.id) },
+      properties: { id: e.id, icon: ensureIcon(iconOf(e), colorOf(e)) },
+    })),
+  });
+}
 
 // Uluslararası Uzay İstasyonu: tarayıcı 10 saniyede bir anlık konumunu çeker (wheretheiss.at, ücretsiz, anahtarsız).
-const ISS_CAT = { icon: 'satellite', color: '#7048e8' };
-const issMarker = L.marker([0, 0], {
-  icon: L.divIcon({ className: 'marker-ico', html: `<div class="ico iss" style="background:${ISS_CAT.color}"><i class="ti ti-satellite"></i></div>`, iconSize: [30, 30], iconAnchor: [15, 15] }),
-  zIndexOffset: 1000,
-}).bindPopup(() => issPopupHtml());
 let iss = null;
-const issPopupHtml = () => (iss ? `<div class="pop-title"><i class="ti ti-satellite" style="color:${ISS_CAT.color}"></i> ${T.cats.iss}</div>
-  <div class="pop-meta">${T.altitude}: ${Math.round(iss.altitude)} km · ${T.speed}: ${Math.round(iss.velocity).toLocaleString(T.locale)} km/h</div>
-  <div class="pop-meta">${iss.latitude.toFixed(2)}°, ${iss.longitude.toFixed(2)}°</div>` : T.cats.iss);
+const issEl = document.createElement('div');
+issEl.className = 'ico iss';
+issEl.style.background = ISS_CAT.color;
+issEl.innerHTML = '<i class="ti ti-satellite"></i>';
+issEl.addEventListener('click', (ev) => { ev.stopPropagation(); openInfo('iss'); });
+const issMarker = new maplibregl.Marker({ element: issEl });
 async function updateIss() {
   if (state.off.has('iss')) { issMarker.remove(); return; }
   try {
     iss = await (await fetch('https://api.wheretheiss.at/v1/satellites/25544')).json();
-    issMarker.setLatLng([iss.latitude, iss.longitude]).addTo(map);
-    if (issMarker.isPopupOpen()) issMarker.getPopup().setContent(issPopupHtml());
+    issMarker.setLngLat([iss.longitude, iss.latitude]).addTo(map);
+    if (infoOpenFor === 'iss') openInfo('iss');
   } catch {}
 }
-setInterval(updateIss, 10000);
+
+// ---------------- Yardımcılar ----------------
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const cat = (e) => CATS[e.cat] || CATS.news;
@@ -178,14 +323,128 @@ function sourceLink(e) {
   return e.url ? `<a href="${esc(e.url)}" target="_blank" rel="noopener">${esc(e.src || T.source)}</a>` : esc(e.src || '');
 }
 
-function popupHtml(e) {
-  return `${e.img ? imgHtml(e.img, 'pop-img') : ''}
-    <div class="pop-title" dir="auto"><i class="ti ti-${iconOf(e)}" style="color:${colorOf(e)}"></i> ${esc(titleOf(e))}</div>
-    ${isTranslated(e) ? `<div class="pop-meta" dir="auto">${esc(origNote(e))}: ${esc(e.title)}</div>` : ''}
-    ${e.text ? `<div class="pop-text" dir="auto">${esc(e.text.slice(0, 300))}${e.text.length > 300 ? '…' : ''}</div>` : ''}
-    <div class="pop-meta">${esc(placeName(e))} · ${whenOf(e)} · ${esc(catLabel(e))}</div>
-    <div class="pop-meta">${T.source}: ${sourceLink(e)} ${translateLink(e) ? '· ' + translateLink(e) : ''}</div>`;
+// ---------------- Bilgi paneli ----------------
+
+let infoOpenFor = null;
+function infoHtml(e) {
+  return `${e.img ? imgHtml(e.img, 'info-img') : ''}
+    <div class="info-cat">${icoHtml(e)}<span>${esc(catLabel(e))}</span></div>
+    <h3 class="info-title" dir="auto">${esc(titleOf(e))}</h3>
+    ${isTranslated(e) ? `<div class="info-orig" dir="auto"><b>${esc(origNote(e))}:</b> ${esc(e.title)}</div>` : ''}
+    ${e.text ? `<p class="info-text" dir="auto">${esc(e.text.slice(0, 600))}${e.text.length > 600 ? '…' : ''}</p>` : ''}
+    <dl class="info-facts">
+      <dt><i class="ti ti-map-pin"></i></dt><dd>${esc(placeName(e))}</dd>
+      <dt><i class="ti ti-clock"></i></dt><dd>${whenOf(e)}</dd>
+      <dt><i class="ti ti-world"></i></dt><dd>${sourceLink(e)}${translateLink(e) ? ' · ' + translateLink(e) : ''}</dd>
+      <dt><i class="ti ti-gps"></i></dt><dd>${e.lat.toFixed(3)}°, ${e.lon.toFixed(3)}°</dd>
+    </dl>
+    ${e.url ? `<a class="info-open" href="${esc(e.url)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> ${T.source}</a>` : ''}`;
 }
+function issHtml() {
+  if (!iss) return T.cats.iss;
+  return `<div class="info-cat"><div class="ico" style="background:${ISS_CAT.color}"><i class="ti ti-satellite"></i></div><span>${T.cats.iss}</span></div>
+    <dl class="info-facts">
+      <dt><i class="ti ti-arrow-up"></i></dt><dd>${T.altitude}: ${Math.round(iss.altitude)} km</dd>
+      <dt><i class="ti ti-gauge"></i></dt><dd>${T.speed}: ${Math.round(iss.velocity).toLocaleString(T.locale)} km/h</dd>
+      <dt><i class="ti ti-gps"></i></dt><dd>${iss.latitude.toFixed(2)}°, ${iss.longitude.toFixed(2)}°</dd>
+    </dl>`;
+}
+function openInfo(target) {
+  infoOpenFor = target === 'iss' ? 'iss' : target.id;
+  $('infoTitle').textContent = T.details;
+  $('infoBody').innerHTML = target === 'iss' ? issHtml() : infoHtml(target);
+  const panel = $('infoPanel');
+  panel.hidden = false;
+  panel.classList.remove('collapsed');
+}
+function closeInfo() {
+  $('infoPanel').hidden = true;
+  infoOpenFor = null;
+  setActive(null);
+}
+
+// Bir olayı seç: haritada işaretle, bilgi panelini aç, listede göster; istenirse haritayı oraya götür.
+function select(e, fly) {
+  setActive(e.id);
+  openInfo(e);
+  if (fly) map.flyTo({ center: [e.lon, e.lat], zoom: Math.max(map.getZoom(), 9), duration: 1200 });
+}
+function setActive(id) {
+  state.activeId = id;
+  if (mapReady) map.setFilter('active', ['==', ['get', 'id'], id || '']);
+  document.querySelectorAll('.item.active').forEach((el) => el.classList.remove('active'));
+  const el = id && document.querySelector(`.item[data-id="${CSS.escape(id)}"]`);
+  if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
+}
+
+// ---------------- Sürüklenebilir paneller ----------------
+// Başlıktan tutup taşınır, kenara yaklaşınca kenara yapışır, katlanır; yerleri tarayıcıda hatırlanır.
+
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+function placePanel(panel, left, top) {
+  const box = panel.parentElement.getBoundingClientRect();
+  const w = panel.offsetWidth, h = panel.querySelector('.panel-head').offsetHeight;
+  const SNAP = 16, M = 8;
+  left = Math.min(Math.max(left, M), box.width - w - M);
+  top = Math.min(Math.max(top, M), box.height - h - M);
+  if (left < SNAP + M) left = M;
+  if (box.width - (left + w) < SNAP + M) left = box.width - w - M;
+  if (top < SNAP + M) top = M;
+  panel.style.inset = 'auto';
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+
+function makePanel(panel) {
+  const head = panel.querySelector('.panel-head');
+  const saved = store.get(`panel:${panel.id}`);
+  if (saved?.collapsed) panel.classList.add('collapsed');
+  const restore = () => { if (saved?.left != null && !panel.hidden) placePanel(panel, saved.left, saved.top); };
+  new MutationObserver(restore).observe(panel, { attributes: true, attributeFilter: ['hidden'] });
+
+  head.addEventListener('pointerdown', (ev) => {
+    if (ev.target.closest('.panel-btn')) return;
+    const start = panel.getBoundingClientRect();
+    const box = panel.parentElement.getBoundingClientRect();
+    const dx = ev.clientX - start.left, dy = ev.clientY - start.top;
+    head.setPointerCapture(ev.pointerId);
+    panel.classList.add('dragging');
+    const move = (m) => placePanel(panel, m.clientX - box.left - dx, m.clientY - box.top - dy);
+    const up = () => {
+      head.removeEventListener('pointermove', move);
+      head.removeEventListener('pointerup', up);
+      panel.classList.remove('dragging');
+      const r = panel.getBoundingClientRect();
+      store.set(`panel:${panel.id}`, { left: r.left - box.left, top: r.top - box.top, collapsed: panel.classList.contains('collapsed') });
+    };
+    head.addEventListener('pointermove', move);
+    head.addEventListener('pointerup', up);
+  });
+
+  head.addEventListener('click', (ev) => {
+    const act = ev.target.closest('.panel-btn')?.dataset.act;
+    if (act === 'collapse') {
+      panel.classList.toggle('collapsed');
+      store.set(`panel:${panel.id}`, { ...(store.get(`panel:${panel.id}`) || {}), collapsed: panel.classList.contains('collapsed') });
+    }
+    if (act === 'close') panel.id === 'infoPanel' ? closeInfo() : togglePanel('layers');
+  });
+}
+
+function resetPanels() {
+  for (const p of document.querySelectorAll('.panel')) {
+    store.del(`panel:${p.id}`);
+    p.removeAttribute('style');
+    p.classList.remove('collapsed');
+  }
+}
+
+// ---------------- Filtreler ve liste ----------------
 
 // Zaman aralığı son veri güncellemesine göre hesaplanır; veri eskiyse harita yine boş kalmaz.
 function sinceMs() {
@@ -219,26 +478,12 @@ function renderLayers() {
     row('iss', ISS_CAT, '');
 }
 
-function renderMarkers(list) {
-  cluster.clearLayers();
-  markers.clear();
-  const layers = list.map((e) => {
-    const m = L.marker([e.lat, e.lon], {
-      icon: L.divIcon({ className: 'marker-ico', html: icoHtml(e), iconSize: [26, 26], iconAnchor: [13, 13] }),
-    }).bindPopup(() => popupHtml(e), { maxWidth: 320 });
-    m.on('click', () => highlight(e.id));
-    markers.set(e.id, m);
-    return m;
-  });
-  cluster.addLayers(layers);
-}
-
 function renderList(list) {
-  const b = map.getBounds();
+  const b = mapReady ? map.getBounds() : null;
   // Fırlatmalar dünyanın her yerinde ve ileri tarihli: sadece "Uzay" konusunda, en yakını üstte listelenir.
-  let shown = state.topic === 'space'
+  const shown = state.topic === 'space'
     ? list.slice().sort((x, y) => x.t - y.t)
-    : list.filter((e) => e.cat !== 'launch' && (!state.inView || b.contains([e.lat, e.lon])));
+    : list.filter((e) => e.cat !== 'launch' && (!state.inView || !b || b.contains([e.lon, e.lat])));
   $('status').textContent = [
     T.listed(shown.length),
     state.updated ? `${T.updated}: ${ago(state.updated)}` : T.noData,
@@ -260,31 +505,19 @@ function renderList(list) {
 }
 
 function render() {
-  map.invalidateSize();
   const list = filtered();
   renderLayers();
   renderMarkers(list);
   renderList(list);
+  if (infoOpenFor && infoOpenFor !== 'iss' && byId.has(infoOpenFor)) openInfo(byId.get(infoOpenFor));
 }
-
-// Üstteki bölge sekmeleri: tıklayınca harita o bölgeye gider.
-const REGIONS = {
-  all: [[24, 25], [42.5, 63]],
-  tr: [[35.8, 25.6], [42.2, 44.9]],
-  kurdistan: [[34, 37.5], [39.5, 48]],
-  sy: [[32.2, 35.6], [37.4, 42.5]],
-  iq: [[29, 38.7], [37.4, 48.7]],
-  ir: [[25, 44], [39.8, 63.4]],
-  il: [[29.4, 34.1], [34.7, 36.7]],
-  cy: [[34.5, 32.2], [35.8, 34.7]],
-};
 
 function renderRegions() {
   $('regions').innerHTML = Object.keys(REGIONS).map((k) =>
     `<button class="region ${state.region === k ? 'active' : ''}" data-region="${k}">${T.regions[k]}</button>`).join('');
 }
 
-// Sağ sütundaki Dil / Zaman sekmeleri ve sol alttaki Katmanlar paneli.
+// Sağ sütundaki Dil / Zaman sekmeleri ve harita üstündeki Katmanlar paneli.
 function togglePanel(name) {
   state.panel = state.panel === name ? null : name;
   $('langPanel').hidden = state.panel !== 'lang';
@@ -325,6 +558,10 @@ function applyLanguage() {
   for (const [id, key] of [['tabFeed', 'feed'], ['tabLang', 'lang'], ['tabTime', 'time'], ['tabLayers', 'layers']]) {
     $(id).querySelector('span').textContent = T.tabs[key];
   }
+  $('layersTitle').textContent = T.tabs.layers;
+  $('infoTitle').textContent = T.details;
+  $('layersBtn')?.setAttribute('title', T.tabs.layers);
+  $('resetPanelsBtn')?.setAttribute('title', T.resetPanels);
   $('inViewLabel').textContent = T.inView;
   $('newsLangLabel').textContent = T.newsLang;
   renderRegions();
@@ -334,12 +571,7 @@ function applyLanguage() {
   render();
 }
 
-function highlight(id) {
-  state.activeId = id;
-  document.querySelectorAll('.item.active').forEach((el) => el.classList.remove('active'));
-  const el = document.querySelector(`.item[data-id="${CSS.escape(id)}"]`);
-  if (el) { el.classList.add('active'); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); }
-}
+// ---------------- Veri ----------------
 
 async function loadJson(url) {
   try {
@@ -378,12 +610,15 @@ async function load() {
     if (e.isNew) fresh++;
   }
   state.events = events;
+  byId.clear();
+  for (const e of events) byId.set(e.id, e);
   state.updated = auto?.updated || 0;
   state.fresh = fresh;
   render();
 }
 
-// --- Olaylar ---
+// ---------------- Olay dinleyicileri ----------------
+
 $('uiLangs').addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-lang]');
   if (!b) return;
@@ -403,7 +638,7 @@ $('regions').addEventListener('click', (ev) => {
   if (!b) return;
   state.region = b.dataset.region;
   renderRegions();
-  map.flyToBounds(REGIONS[state.region], { duration: 0.8 });
+  map.fitBounds(REGIONS[state.region], { padding: 30, duration: 1200 });
 });
 document.querySelector('.feed-tabs').addEventListener('click', (ev) => {
   const b = ev.target.closest('.ftab');
@@ -422,33 +657,42 @@ $('topics').addEventListener('click', (ev) => {
   state.topic = b.dataset.topic;
   renderTopics();
   render();
-  // Fırlatma rampaları dünyanın her yerinde: Uzay seçilince harita dünyayı gösterir.
-  if (state.topic === 'space') map.flyTo([25, 20], 2, { duration: 0.8 });
+  // Fırlatma rampaları dünyanın her yerinde: Uzay seçilince küre bütün olarak gösterilir.
+  if (state.topic === 'space') map.flyTo({ center: [20, 25], zoom: 1.2, duration: 1200 });
 });
 $('list').addEventListener('click', (ev) => {
   if (ev.target.closest('a')) return;
   const li = ev.target.closest('.item');
-  if (!li) return;
-  const m = markers.get(li.dataset.id);
-  if (!m) return;
-  highlight(li.dataset.id);
-  cluster.zoomToShowLayer(m, () => m.openPopup());
+  const e = li && byId.get(li.dataset.id);
+  if (e) select(e, true);
 });
-let t;
-$('search').addEventListener('input', (ev) => { clearTimeout(t); t = setTimeout(() => { state.q = ev.target.value.trim(); render(); }, 200); });
+let typing;
+$('search').addEventListener('input', (ev) => { clearTimeout(typing); typing = setTimeout(() => { state.q = ev.target.value.trim(); render(); }, 200); });
 $('newsLang').addEventListener('change', (ev) => { state.newsLang = ev.target.value; render(); });
 $('inView').addEventListener('change', (ev) => { state.inView = ev.target.checked; renderList(filtered()); });
-$('toggleFeed').addEventListener('click', () => { $('feed').classList.toggle('hidden'); map.invalidateSize(); });
+$('toggleFeed').addEventListener('click', () => { $('feed').classList.toggle('hidden'); map.resize(); });
 map.on('moveend', () => { if (state.inView) renderList(filtered()); });
+window.addEventListener('resize', () => {
+  for (const p of document.querySelectorAll('.panel')) if (p.style.left) placePanel(p, parseFloat(p.style.left), parseFloat(p.style.top));
+});
 
+// ---------------- Başlangıç ----------------
+
+makePanel($('infoPanel'));
+makePanel($('layersPanel'));
+if (TOPICS[PARAMS.get('topic')]) state.topic = PARAMS.get('topic');
 if (REGIONS[PARAMS.get('region')]) {
   state.region = PARAMS.get('region');
-  map.fitBounds(REGIONS[state.region]);
+  map.fitBounds(REGIONS[state.region], { padding: 30, duration: 0 });
+} else if (state.topic === 'space') {
+  map.jumpTo({ center: [20, 25], zoom: 1.2 });
 }
 if (['lang', 'time', 'layers'].includes(PARAMS.get('panel'))) togglePanel(PARAMS.get('panel'));
-if (TOPICS[PARAMS.get('topic')]) state.topic = PARAMS.get('topic');
-if (state.topic === 'space') map.setView([25, 20], 2);
-applyLanguage();
-load();
-updateIss();
-setInterval(load, REFRESH_MS);
+// Simgeler haritaya Tabler yazı tipinden çizildiği için önce yazı tipinin yüklenmesi beklenir.
+document.fonts.load('16px tabler-icons').finally(() => {
+  applyLanguage();
+  load();
+  updateIss();
+  setInterval(load, REFRESH_MS);
+  setInterval(updateIss, 10000);
+});

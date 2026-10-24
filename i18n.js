@@ -18,7 +18,7 @@ window.I18N = {
     alerts: { green: 'Yeşil alarm', orange: 'Turuncu alarm', red: 'Kırmızı alarm' },
     topics: { all: 'Tümü', conflict: 'Çatışma', politics: 'Siyaset', kurdistan: 'Kürdistan', disaster: 'Afet', space: 'Uzay' },
     inTime: (x) => `${x} sonra`, dayWord: 'gün', hourWord: 'saat', minWord: 'dk', launched: 'Fırlatıldı',
-    altitude: 'Yükseklik', speed: 'Hız',
+    altitude: 'Yükseklik', speed: 'Hız', details: 'Ayrıntılar', resetPanels: 'Panelleri sıfırla',
   },
   ku: {
     name: 'Kurmancî', dir: 'ltr', title: 'Nexşeya Bûyerên Zindî',
@@ -38,7 +38,7 @@ window.I18N = {
     alerts: { green: 'Alarma kesk', orange: 'Alarma porteqalî', red: 'Alarma sor' },
     topics: { all: 'Hemû', conflict: 'Pevçûn', politics: 'Siyaset', kurdistan: 'Kurdistan', disaster: 'Felaket', space: 'Feza' },
     inTime: (x) => `piştî ${x}`, dayWord: 'roj', hourWord: 'saet', minWord: 'deq', launched: 'Hate avêtin',
-    altitude: 'Bilindahî', speed: 'Lez',
+    altitude: 'Bilindahî', speed: 'Lez', details: 'Hûrgilî', resetPanels: 'Panelan ji nû ve rêz bike',
   },
   ckb: {
     name: 'کوردی (سۆرانی)', dir: 'rtl', title: 'نەخشەی ڕووداوە ڕاستەوخۆکان',
@@ -58,7 +58,7 @@ window.I18N = {
     alerts: { green: 'ئاگاداری سەوز', orange: 'ئاگاداری پرتەقاڵی', red: 'ئاگاداری سوور' },
     topics: { all: 'هەمووی', conflict: 'پێکدادان', politics: 'سیاسەت', kurdistan: 'کوردستان', disaster: 'کارەسات', space: 'ئاسمان' },
     inTime: (x) => `دوای ${x}`, dayWord: 'ڕۆژ', hourWord: 'کاتژمێر', minWord: 'خولەک', launched: 'هەڵدرا',
-    altitude: 'بەرزی', speed: 'خێرایی',
+    altitude: 'بەرزی', speed: 'خێرایی', details: 'وردەکاری', resetPanels: 'ڕێکخستنەوەی پانێڵەکان',
   },
   en: {
     name: 'English', dir: 'ltr', title: 'Live Event Map',
@@ -77,7 +77,7 @@ window.I18N = {
     alerts: { green: 'Green alert', orange: 'Orange alert', red: 'Red alert' },
     topics: { all: 'All', conflict: 'Conflict', politics: 'Politics', kurdistan: 'Kurdistan', disaster: 'Disasters', space: 'Space' },
     inTime: (x) => `in ${x}`, dayWord: 'd', hourWord: 'h', minWord: 'min', launched: 'Launched',
-    altitude: 'Altitude', speed: 'Speed',
+    altitude: 'Altitude', speed: 'Speed', details: 'Details', resetPanels: 'Reset panels',
   },
   ar: {
     name: 'العربية', dir: 'rtl', title: 'خريطة الأحداث المباشرة',
@@ -96,7 +96,7 @@ window.I18N = {
     alerts: { green: 'إنذار أخضر', orange: 'إنذار برتقالي', red: 'إنذار أحمر' },
     topics: { all: 'الكل', conflict: 'اشتباكات', politics: 'سياسة', kurdistan: 'كردستان', disaster: 'كوارث', space: 'الفضاء' },
     inTime: (x) => `بعد ${x}`, dayWord: 'يوم', hourWord: 'ساعة', minWord: 'دقيقة', launched: 'تم الإطلاق',
-    altitude: 'الارتفاع', speed: 'السرعة',
+    altitude: 'الارتفاع', speed: 'السرعة', details: 'التفاصيل', resetPanels: 'إعادة ترتيب اللوحات',
   },
 };
 // Yer adları dizisindeki sıra (data/places.js): [tr, en, ku, ckb, ar]
