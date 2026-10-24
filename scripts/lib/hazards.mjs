@@ -12,14 +12,14 @@ export async function fetchDisasters() {
   // Servis bazen yavaşlıyor; olmazsa önceki afet kayıtları events.json'da kalır.
   const from = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
   const features = [];
-  for (const type of Object.keys(TYPES)) {
+  await Promise.all(Object.keys(TYPES).map(async (type) => {
     try {
       const url = `https://www.gdacs.org/gdacsapi/api/events/geteventlist/SEARCH?eventlist=${type}&fromDate=${from}&alertlevel=Green;Orange;Red`;
       features.push(...((await (await get(url, 45000)).json()).features || []));
     } catch (e) {
       if (!/^40[04]/.test(e.message)) console.warn(`  GDACS ${type} atlandı:`, e.message); // 400/404 = o türde güncel afet yok
     }
-  }
+  }));
   const out = [];
   for (const f of features) {
     const p = f.properties;
