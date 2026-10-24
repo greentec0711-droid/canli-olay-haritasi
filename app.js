@@ -60,6 +60,7 @@ const state = {
   events: [], updated: 0, fresh: 0, off: new Set(), q: '', hours: 6, inView: true, activeId: null,
   lang: pickLang(), newsLang: 'all', region: null, panel: null, topic: 'all',
 };
+state.off.add('starlink'); // ~10.000 uydu: varsayılan kapalı, Katmanlar panelinden açılır
 const byId = new Map();
 const PLACES = window.__PLACES__ || [];
 let T = I18N[state.lang];
@@ -141,12 +142,51 @@ map.on('style.load', () => {
   addEventLayers();
   mapReady = true;
   render();
+  drawMovers();
+  updateSatPositions();
 });
 // Kaynak bilgisi haritanın altını kaplamasın: başta kapalı, (i) düğmesiyle açılır.
 map.once('load', () => document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show'));
 
 // Olaylar tek bir GeoJSON kaynağında; yakın olaylar sayılı kümeler hâlinde birleşir.
 function addEventLayers() {
+  // Uydular olayların altında, küçük renkli noktalar.
+  map.addSource('sats', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({
+    id: 'sats', type: 'circle', source: 'sats',
+    paint: {
+      'circle-color': ['get', 'color'],
+      'circle-radius': ['case', ['==', ['get', 'small'], 1], 1.6, 3],
+      'circle-opacity': 0.9,
+      'circle-stroke-width': ['case', ['==', ['get', 'small'], 1], 0, 0.5],
+      'circle-stroke-color': '#000000',
+    },
+  });
+  map.on('click', 'sats', (ev) => {
+    const s = sats.get(String(ev.features[0].properties.norad));
+    if (s) openInfo(s);
+  });
+  map.on('mouseenter', 'sats', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'sats', () => { map.getCanvas().style.cursor = ''; });
+
+  // Uçaklar ve gemiler: rotalarına göre döndürülmüş simgeler.
+  map.addSource('movers', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({
+    id: 'movers', type: 'symbol', source: 'movers',
+    layout: {
+      'icon-image': ['get', 'icon'], 'icon-rotate': ['get', 'rot'], 'icon-rotation-alignment': 'map',
+      'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      'icon-size': ['interpolate', ['linear'], ['zoom'], 2, 0.55, 6, 0.8, 10, 1],
+    },
+  });
+  map.on('click', 'movers', (ev) => {
+    const p = ev.features[0].properties;
+    if (p.kind === 'air') { const a = aircraft.get(p.id); if (a) openInfo({ air: a }); }
+    else { const s = ships.find((x) => x.mmsi === String(p.id)); if (s) openInfo({ ship: s }); }
+  });
+  map.on('mouseenter', 'movers', () => { map.getCanvas().style.cursor = 'pointer'; });
+  map.on('mouseleave', 'movers', () => { map.getCanvas().style.cursor = ''; });
+
   map.addSource('events', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, cluster: true, clusterRadius: 42, clusterMaxZoom: 8 });
   map.addLayer({
     id: 'clusters', type: 'circle', source: 'events', filter: ['has', 'point_count'],
@@ -275,6 +315,197 @@ async function updateIss() {
   } catch {}
 }
 
+// ---------------- Uydular ----------------
+// Yörünge verisi data/sats.json'dan (CelesTrak, 6 saatte bir yenilenir); konumlar tarayıcıda
+// SGP4 yörünge modeliyle 3 saniyede bir hesaplanır. Starlink (~10.000 uydu) ayrı dosyada, katmanı açılınca iner.
+const SAT_COLORS = {
+  stations: '#f59f00', visual: '#dee2e6', 'gps-ops': '#40c057', galileo: '#40c057', beidou: '#40c057',
+  weather: '#22b8cf', science: '#be4bdb', geo: '#fab005', starlink: '#748ffc',
+};
+const SAT_CAT = { icon: 'satellite', color: '#495057' };
+const STARLINK_CAT = { icon: 'satellite', color: '#748ffc' };
+let satLib = null;
+const sats = new Map(); // NORAD numarası -> uydu
+const satFiles = new Set();
+
+async function loadSats() {
+  const want = ['data/sats.json'];
+  if (!state.off.has('starlink')) want.push('data/sats-starlink.json');
+  const todo = want.filter((f) => !satFiles.has(f));
+  if (!todo.length) return;
+  satLib ||= await import('https://cdn.jsdelivr.net/npm/satellite.js@7.1.0/+esm');
+  for (const f of todo) {
+    const j = await loadJson(f);
+    if (!j) continue;
+    satFiles.add(f);
+    for (const [group, list] of Object.entries(j.groups)) {
+      for (const [name, l1, l2] of list) {
+        const norad = l1.slice(2, 7).trim();
+        if (sats.has(norad)) continue;
+        try { sats.set(norad, { norad, name, group, rec: satLib.twoline2satrec(l1, l2) }); } catch {}
+      }
+    }
+  }
+}
+
+const satVisible = (s) => !state.off.has(s.group === 'starlink' ? 'starlink' : 'sats');
+
+function updateSatPositions() {
+  if (!mapReady || !satLib) return;
+  const now = new Date();
+  const gmst = satLib.gstime(now);
+  const features = [];
+  for (const s of sats.values()) {
+    if (!satVisible(s)) continue;
+    const pv = satLib.propagate(s.rec, now);
+    if (!pv?.position) continue;
+    const geo = satLib.eciToGeodetic(pv.position, gmst);
+    s.lat = satLib.degreesLat(geo.latitude);
+    s.lon = satLib.degreesLong(geo.longitude);
+    s.alt = geo.height;
+    s.vel = Math.hypot(pv.velocity.x, pv.velocity.y, pv.velocity.z) * 3600;
+    features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+      properties: { norad: s.norad, color: SAT_COLORS[s.group] || '#dee2e6', small: s.group === 'starlink' ? 1 : 0 },
+    });
+  }
+  map.getSource('sats').setData({ type: 'FeatureCollection', features });
+  if (infoOpenFor?.startsWith('sat:')) openInfo(sats.get(infoOpenFor.slice(4)));
+}
+
+async function refreshSats() {
+  if (state.off.has('sats') && state.off.has('starlink')) { if (mapReady) updateSatPositions(); return; }
+  try { await loadSats(); } catch {}
+  updateSatPositions();
+  renderLayers();
+}
+
+// ---------------- Uçaklar ve gemiler ----------------
+
+// Uçaklar: Cloudflare'deki küçük aracı servis (worker/) üzerinden adsb.lol / adsb.fi.
+// Görünen bölgenin uçakları 20 saniyede, dünya genelindeki askeri uçuşlar 60 saniyede bir istenir;
+// aradaki sürede her uçak son hızı ve rotasıyla ileri hesaplanır (ölü hesaplama), böylece akıcı hareket eder.
+const AIR_API = ''; // Worker yayınlanınca adresi buraya yazılır
+const AIR_CAT = { icon: 'plane', color: '#f59f00' };
+const MIL_CAT = { icon: 'plane', color: '#e03131' };
+const SHIP_COLORS = { cargo: '#2f9e44', tanker: '#c2255c', passenger: '#1c7ed6', fishing: '#f08c00', military: '#495057', other: '#868e96' };
+const SHIP_CAT = { icon: 'ship', color: '#1c7ed6' };
+const aircraft = new Map(); // hex -> uçak
+let lastMil = 0, ships = [], shipsUpdated = 0, airMove;
+
+// Rotaya göre döndürülen simgeler: kuzeyi gösteren uçak silüeti ve gemi oku, tuvalde çizilir.
+function ensureShape(key, color, draw) {
+  if (map.hasImage(key)) return key;
+  const r = 2, size = 26 * r;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  ctx.scale(r, r);
+  ctx.translate(13, 13);
+  ctx.beginPath();
+  draw(ctx);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.strokeStyle = 'rgba(0,0,0,0.75)';
+  ctx.lineWidth = 1.2;
+  ctx.fill();
+  ctx.stroke();
+  map.addImage(key, ctx.getImageData(0, 0, size, size), { pixelRatio: r });
+  return key;
+}
+const planeShape = (ctx) => {
+  for (const [x, y] of [[0, -11], [1.6, -8], [1.6, -2.5], [10, 2.5], [10, 4.5], [1.6, 2], [1.4, 7.5], [4, 9.5], [4, 11], [0, 10],
+    [-4, 11], [-4, 9.5], [-1.4, 7.5], [-1.6, 2], [-10, 4.5], [-10, 2.5], [-1.6, -2.5], [-1.6, -8]]) ctx.lineTo(x, y);
+};
+const shipShape = (ctx) => { for (const [x, y] of [[0, -10], [5, 0], [5, 9], [-5, 9], [-5, 0]]) ctx.lineTo(x, y); };
+
+function viewRadiusNm() {
+  const b = map.getBounds(), c = map.getCenter();
+  const km = c.distanceTo(b.getNorthEast()) / 1000;
+  return Math.min(250, Math.max(25, km / 1.852));
+}
+
+async function updateAircraft() {
+  if (!AIR_API || !mapReady || document.hidden) return;
+  try {
+    if (!state.off.has('aircraft') && map.getZoom() >= 3) {
+      const c = map.getCenter();
+      const j = await (await fetch(`${AIR_API}/area?lat=${c.lat.toFixed(2)}&lon=${c.lng.toFixed(2)}&dist=${Math.round(viewRadiusNm())}`)).json();
+      for (const [hex, a] of aircraft) if (!a.mil) aircraft.delete(hex);
+      for (const a of j.ac || []) aircraft.set(a.h, { ...a, seen: Date.now() });
+    }
+    if (!state.off.has('mil') && Date.now() - lastMil > 60e3) {
+      lastMil = Date.now();
+      const j = await (await fetch(`${AIR_API}/mil`)).json();
+      for (const [hex, a] of aircraft) if (a.mil) aircraft.delete(hex);
+      for (const a of j.ac || []) aircraft.set(a.h, { ...a, mil: 1, seen: Date.now() });
+    }
+  } catch {}
+  drawMovers();
+}
+
+// Ölü hesaplama: son bilinen hız (knot) ve rotayla konumu ileri taşı.
+function advance(o, speedKt, course, dtMs) {
+  if (!speedKt || o.alt === 'ground') return;
+  const km = speedKt * 1.852 * (dtMs / 3600e3);
+  const rad = (course * Math.PI) / 180;
+  o.lat += (km * Math.cos(rad)) / 111.32;
+  o.lon += (km * Math.sin(rad)) / (111.32 * Math.cos((o.lat * Math.PI) / 180));
+}
+let lastTick = Date.now();
+function tickMovers() {
+  const now = Date.now(), dt = now - lastTick;
+  lastTick = now;
+  for (const a of aircraft.values()) advance(a, a.gs, a.trk, dt);
+  drawMovers();
+}
+
+function drawMovers() {
+  if (!mapReady) return;
+  const civ = ensureShape('plane-civ', AIR_CAT.color, planeShape);
+  const mil = ensureShape('plane-mil', MIL_CAT.color, planeShape);
+  const planes = [...aircraft.values()].filter((a) => !state.off.has(a.mil ? 'mil' : 'aircraft'));
+  const shown = state.off.has('ships') ? [] : ships;
+  map.getSource('movers').setData({
+    type: 'FeatureCollection',
+    features: [
+      ...planes.map((a) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
+        properties: { kind: 'air', id: a.h, icon: a.mil ? mil : civ, rot: a.trk || 0 } })),
+      ...shown.map((s) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
+        properties: { kind: 'ship', id: s.mmsi, icon: ensureShape(`ship-${s.type}`, SHIP_COLORS[s.type] || SHIP_COLORS.other, shipShape), rot: s.hdg ?? s.cog ?? 0 } })),
+    ],
+  });
+  if (infoOpenFor?.startsWith('air:')) { const a = aircraft.get(infoOpenFor.slice(4)); if (a) openInfo({ air: a }); }
+}
+
+function airHtml(a) {
+  const alt = a.alt === 'ground' ? T.onGround : a.alt != null ? `${Math.round(a.alt * 0.3048).toLocaleString(T.locale)} m` : '—';
+  return `<div class="info-cat"><div class="ico" style="background:${a.mil ? MIL_CAT.color : AIR_CAT.color}"><i class="ti ti-plane"></i></div><span>${a.mil ? T.cats.mil : T.cats.aircraft}</span></div>
+    <h3 class="info-title" dir="ltr">${esc(a.f || a.r || a.h)}</h3>
+    <dl class="info-facts">
+      <dt><i class="ti ti-id"></i></dt><dd>${T.reg}: ${esc(a.r || '—')} · ${T.acType}: ${esc(a.t || '—')}</dd>
+      <dt><i class="ti ti-arrow-up"></i></dt><dd>${T.altitude}: ${alt}</dd>
+      <dt><i class="ti ti-gauge"></i></dt><dd>${T.speed}: ${a.gs ? Math.round(a.gs * 1.852).toLocaleString(T.locale) + ' km/h' : '—'}</dd>
+      <dt><i class="ti ti-compass"></i></dt><dd>${T.heading}: ${Math.round(a.trk || 0)}°${a.sq ? ` · Squawk ${esc(a.sq)}` : ''}</dd>
+      <dt><i class="ti ti-gps"></i></dt><dd>${a.lat.toFixed(3)}°, ${a.lon.toFixed(3)}°</dd>
+    </dl>
+    <a class="info-open" href="https://globe.adsb.lol/?icao=${esc(a.h)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> adsb.lol</a>`;
+}
+
+function shipHtml(s) {
+  return `<div class="info-cat"><div class="ico" style="background:${SHIP_COLORS[s.type] || SHIP_COLORS.other}"><i class="ti ti-ship"></i></div><span>${esc(T.shipTypes[s.type] || T.cats.ships)}</span></div>
+    <h3 class="info-title" dir="ltr">${esc(s.name || s.mmsi)}</h3>
+    <dl class="info-facts">
+      <dt><i class="ti ti-hash"></i></dt><dd>MMSI ${esc(s.mmsi)}</dd>
+      <dt><i class="ti ti-gauge"></i></dt><dd>${T.speed}: ${s.sog != null ? Math.round(s.sog * 1.852 * 10) / 10 + ' km/h' : '—'}</dd>
+      <dt><i class="ti ti-compass"></i></dt><dd>${T.heading}: ${Math.round(s.cog ?? 0)}°${s.dest ? ` · ${esc(s.dest)}` : ''}</dd>
+      <dt><i class="ti ti-clock"></i></dt><dd>${ago(s.seen)}</dd>
+      <dt><i class="ti ti-gps"></i></dt><dd>${s.lat.toFixed(3)}°, ${s.lon.toFixed(3)}°</dd>
+    </dl>
+    <a class="info-open" href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:${esc(s.mmsi)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> MarineTraffic</a>`;
+}
+
 // ---------------- Yardımcılar ----------------
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -349,10 +580,24 @@ function issHtml() {
       <dt><i class="ti ti-gps"></i></dt><dd>${iss.latitude.toFixed(2)}°, ${iss.longitude.toFixed(2)}°</dd>
     </dl>`;
 }
+function satHtml(s) {
+  return `<div class="info-cat"><div class="ico" style="background:${SAT_COLORS[s.group] || SAT_CAT.color}"><i class="ti ti-satellite"></i></div><span>${esc(T.satGroups[s.group] || T.cats.sats)}</span></div>
+    <h3 class="info-title" dir="ltr">${esc(s.name)}</h3>
+    <dl class="info-facts">
+      <dt><i class="ti ti-hash"></i></dt><dd>NORAD ${esc(s.norad)}</dd>
+      <dt><i class="ti ti-arrow-up"></i></dt><dd>${T.altitude}: ${Math.round(s.alt ?? 0).toLocaleString(T.locale)} km</dd>
+      <dt><i class="ti ti-gauge"></i></dt><dd>${T.speed}: ${Math.round(s.vel ?? 0).toLocaleString(T.locale)} km/h</dd>
+      <dt><i class="ti ti-gps"></i></dt><dd>${(s.lat ?? 0).toFixed(2)}°, ${(s.lon ?? 0).toFixed(2)}°</dd>
+    </dl>
+    <a class="info-open" href="https://celestrak.org/satcat/table-satcat.php?CATNR=${esc(s.norad)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> CelesTrak</a>`;
+}
 function openInfo(target) {
-  infoOpenFor = target === 'iss' ? 'iss' : target.id;
+  if (!target) return;
+  infoOpenFor = target === 'iss' ? 'iss' : target.rec ? `sat:${target.norad}` : target.air ? `air:${target.air.h}`
+    : target.ship ? `ship:${target.ship.mmsi}` : target.id;
   $('infoTitle').textContent = T.details;
-  $('infoBody').innerHTML = target === 'iss' ? issHtml() : infoHtml(target);
+  $('infoBody').innerHTML = target === 'iss' ? issHtml() : target.rec ? satHtml(target) : target.air ? airHtml(target.air)
+    : target.ship ? shipHtml(target.ship) : infoHtml(target);
   const panel = $('infoPanel');
   panel.hidden = false;
   panel.classList.remove('collapsed');
@@ -474,8 +719,13 @@ function renderLayers() {
   const row = (k, c, n) =>
     `<label class="layer"><input type="checkbox" data-cat="${k}" ${state.off.has(k) ? '' : 'checked'}>
       <span class="ico sm" style="background:${c.color}"><i class="ti ti-${c.icon}"></i></span>${T.cats[k]}<span class="n">${n}</span></label>`;
+  let satCount = 0, starlinkCount = 0;
+  for (const s of sats.values()) s.group === 'starlink' ? starlinkCount++ : satCount++;
   $('chips').innerHTML = Object.entries(CATS).filter(([k]) => counts[k]).map(([k, c]) => row(k, c, counts[k])).join('') +
-    row('iss', ISS_CAT, '');
+    row('iss', ISS_CAT, '') + row('sats', SAT_CAT, satCount || '') + row('starlink', STARLINK_CAT, starlinkCount || '') +
+    (AIR_API ? row('aircraft', AIR_CAT, [...aircraft.values()].filter((a) => !a.mil).length || '') +
+      row('mil', MIL_CAT, [...aircraft.values()].filter((a) => a.mil).length || '') : '') +
+    (ships.length ? row('ships', SHIP_CAT, ships.length) : '');
 }
 
 function renderList(list) {
@@ -592,7 +842,8 @@ function loadEvents() {
 }
 
 async function load() {
-  const [auto, manual] = await Promise.all([loadEvents(), loadJson('data/manual.json')]);
+  const [auto, manual, shipData] = await Promise.all([loadEvents(), loadJson('data/manual.json'), loadJson('data/ships.json')]);
+  if (shipData?.ships) { ships = shipData.ships; shipsUpdated = shipData.updated; drawMovers(); }
   const extra = (manual?.events || []).map((e, i) => ({
     id: 'm' + i, cat: 'manual', src: '', ...e, t: new Date(e.time ?? e.t).getTime(),
   }));
@@ -649,6 +900,9 @@ $('chips').addEventListener('change', (ev) => {
   if (!k) return;
   ev.target.checked ? state.off.delete(k) : state.off.add(k);
   if (k === 'iss') updateIss();
+  if (k === 'sats' || k === 'starlink') refreshSats();
+  if (k === 'aircraft' || k === 'mil') { lastMil = 0; updateAircraft(); }
+  if (k === 'ships') drawMovers();
   render();
 });
 $('topics').addEventListener('click', (ev) => {
@@ -693,6 +947,12 @@ document.fonts.load('16px tabler-icons').finally(() => {
   applyLanguage();
   load();
   updateIss();
+  refreshSats();
   setInterval(load, REFRESH_MS);
   setInterval(updateIss, 10000);
+  setInterval(updateSatPositions, 3000);
+  updateAircraft();
+  setInterval(updateAircraft, 20000);
+  setInterval(tickMovers, 2000);
+  map.on('moveend', () => { clearTimeout(airMove); airMove = setTimeout(updateAircraft, 800); });
 });

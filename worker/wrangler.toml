@@ -1,0 +1,5 @@
+# Cloudflare Workers ayarları (uçak verisi aracısı). Yayınlamak için: npx wrangler deploy
+name = "canli-olay-ucak"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+workers_dev = true

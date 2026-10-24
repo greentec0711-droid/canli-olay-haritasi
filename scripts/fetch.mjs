@@ -3,7 +3,8 @@
 //   - RSS: Türkçe, Kurmancî, Soranî, Arapça, Farsça, İngilizce haber siteleri (scripts/sources.json)
 //   - Telegram: herkese açık kanallar (scripts/sources.json)
 //   - USGS: depremler; GDACS: sel, kasırga, yanardağ, orman yangını, kuraklık
-//   - Launch Library 2: yaklaşan roket fırlatmaları
+//   - Launch Library 2: yaklaşan roket fırlatmaları; CelesTrak: uydu yörüngeleri (6 saatte bir)
+//   - AISStream: bölgedeki gemiler (AISSTREAM_API_KEY varsa; 1 dakika dinlenip anlık görüntü alınır)
 //   - GDELT olaylarının gerçek başlığı ve haber görselleri haber sayfasının kendisinden alınır
 //   - Başlıklar sitenin 5 diline çevrilir (Türkçe, Kurmancî, Soranî, İngilizce, Arapça)
 //
@@ -24,6 +25,8 @@ import { translateTitles } from './lib/translate.mjs';
 import { enrich } from './lib/enrich.mjs';
 import { fetchDisasters, fetchLaunches } from './lib/hazards.mjs';
 import { inRegion } from './lib/region.mjs';
+import { updateSats } from './lib/sats.mjs';
+import { updateShips } from './lib/ships.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DATA = path.join(ROOT, 'data');
@@ -105,7 +108,8 @@ async function main() {
     .sort((a, b) => b.t - a.t)
     .slice(0, MAX_EVENTS);
 
-  await enrich(events, MAX_PAGES);
+  // Gemileri dinlemek 1 dakika sürüyor; bu sırada uydular ve haber sayfaları da işlenir.
+  await Promise.all([updateSats(DATA), updateShips(DATA), enrich(events, MAX_PAGES)]);
   await translateTitles(events, MAX_TRANSLATE);
 
   const json = JSON.stringify({ updated: Date.now(), gdeltLast: gdelt.latest, events, launches });

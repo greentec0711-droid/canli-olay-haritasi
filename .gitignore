@@ -1,3 +1,5 @@
 # Sadece bu bilgisayarda kullanılan dosyalar
 onizleme/
 .claude/
+worker/node_modules/
+worker/.wrangler/
