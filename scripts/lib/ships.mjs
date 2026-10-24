@@ -19,7 +19,8 @@ function shipType(code) {
 }
 
 export async function updateShips(dataDir) {
-  const key = process.env.AISSTREAM_API_KEY;
+  // Kopyalarken yanına gelen boşluk ya da satır sonu anahtarı geçersiz kılar; temizlenir.
+  const key = (process.env.AISSTREAM_API_KEY || '').trim().replace(/^["']|["']$/g, '');
   if (!key) return; // anahtar yoksa gemi katmanı boş kalır
   const file = path.join(dataDir, 'ships.json');
   const ships = new Map();
@@ -29,11 +30,13 @@ export async function updateShips(dataDir) {
   } catch {}
 
   let messages = 0;
+  // Bağlantının nasıl bittiği ships.json'a da yazılır: sorun olursa dışarıdan görülebilsin (anahtarın kendisi yazılmaz).
+  const status = { opened: false, closeCode: null, error: '' };
   await new Promise((resolve) => {
     const ws = new WebSocket('wss://stream.aisstream.io/v0/stream');
     const done = () => { try { ws.close(); } catch {} resolve(); };
     const timer = setTimeout(done, LISTEN_MS);
-    ws.addEventListener('open', () => ws.send(JSON.stringify({
+    ws.addEventListener('open', () => (status.opened = true) && ws.send(JSON.stringify({
       APIKey: key,
       BoundingBoxes: [[[REGION.minLat, REGION.minLon], [REGION.maxLat, REGION.maxLon]]],
       FilterMessageTypes: ['PositionReport', 'ShipStaticData'],
@@ -41,6 +44,7 @@ export async function updateShips(dataDir) {
     ws.addEventListener('message', async (ev) => {
       let m;
       try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : await ev.data.text()); } catch { return; }
+      if (m.error) { status.error = String(m.error).slice(0, 200); return; }
       const meta = m.MetaData || {};
       const mmsi = String(meta.MMSI || '');
       if (!mmsi) return;
@@ -62,11 +66,11 @@ export async function updateShips(dataDir) {
       }
       ships.set(mmsi, s);
     });
-    ws.addEventListener('error', (e) => { console.warn('Gemiler: bağlantı hatası', e.message || ''); clearTimeout(timer); done(); });
-    ws.addEventListener('close', () => { clearTimeout(timer); resolve(); });
+    ws.addEventListener('error', (e) => { status.error ||= `bağlantı hatası ${e.message || ''}`.trim(); clearTimeout(timer); done(); });
+    ws.addEventListener('close', (e) => { status.closeCode = e.code; clearTimeout(timer); resolve(); });
   });
 
   const list = [...ships.values()].filter((s) => s.lat != null && s.seen);
-  await fs.writeFile(file, JSON.stringify({ updated: Date.now(), ships: list }));
-  console.log(`Gemiler: ${messages} mesaj, ${list.length} gemi`);
+  await fs.writeFile(file, JSON.stringify({ updated: Date.now(), messages, status, ships: list }));
+  console.log(`Gemiler: ${messages} mesaj, ${list.length} gemi`, status.error || '');
 }
