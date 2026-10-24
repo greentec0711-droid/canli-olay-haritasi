@@ -169,6 +169,17 @@ function addEventLayers() {
   map.on('mouseenter', 'sats', () => { map.getCanvas().style.cursor = 'pointer'; });
   map.on('mouseleave', 'sats', () => { map.getCanvas().style.cursor = ''; });
 
+  // Seçili uçuşun rotası (uçak simgelerinin altında).
+  map.addSource('route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({
+    id: 'route-done', type: 'line', source: 'route', filter: ['==', ['get', 'done'], 1],
+    layout: { 'line-cap': 'round' }, paint: { 'line-color': '#f59f00', 'line-width': 2.5, 'line-opacity': 0.9 },
+  });
+  map.addLayer({
+    id: 'route-todo', type: 'line', source: 'route', filter: ['==', ['get', 'done'], 0],
+    paint: { 'line-color': '#f59f00', 'line-width': 2, 'line-opacity': 0.75, 'line-dasharray': [2, 2] },
+  });
+
   // Uçaklar ve gemiler: rotalarına göre döndürülmüş simgeler.
   map.addSource('movers', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   map.addLayer({
@@ -181,7 +192,7 @@ function addEventLayers() {
   });
   map.on('click', 'movers', (ev) => {
     const p = ev.features[0].properties;
-    if (p.kind === 'air') { const a = aircraft.get(p.id); if (a) openInfo({ air: a }); }
+    if (p.kind === 'air') { const a = aircraft.get(p.id); if (a) openAir(a); }
     else { const s = ships.find((x) => x.mmsi === String(p.id)); if (s) openInfo({ ship: s }); }
   });
   map.on('mouseenter', 'movers', () => { map.getCanvas().style.cursor = 'pointer'; });
@@ -389,13 +400,13 @@ async function refreshSats() {
 const AIR_API = 'https://canli-olay-ucak.greentec0711.workers.dev'; // worker/src/index.js
 const AIR_CAT = { icon: 'plane', color: '#f59f00' };
 const MIL_CAT = { icon: 'plane', color: '#e03131' };
-const SHIP_COLORS = { cargo: '#2f9e44', tanker: '#c2255c', passenger: '#1c7ed6', fishing: '#f08c00', military: '#495057', other: '#868e96' };
+const SHIP_COLORS = { cargo: '#40c057', tanker: '#e64980', passenger: '#4dabf7', fishing: '#ff922b', military: '#adb5bd', other: '#22b8cf' };
 const SHIP_CAT = { icon: 'ship', color: '#1c7ed6' };
 const aircraft = new Map(); // hex -> uçak
 let lastMil = 0, ships = [], shipsUpdated = 0, airMove;
 
 // Rotaya göre döndürülen simgeler: kuzeyi gösteren uçak silüeti ve gemi oku, tuvalde çizilir.
-function ensureShape(key, color, draw) {
+function ensureShape(key, color, draw, stroke = 'rgba(0,0,0,0.75)') {
   if (map.hasImage(key)) return key;
   const r = 2, size = 26 * r;
   const c = document.createElement('canvas');
@@ -407,8 +418,8 @@ function ensureShape(key, color, draw) {
   draw(ctx);
   ctx.closePath();
   ctx.fillStyle = color;
-  ctx.strokeStyle = 'rgba(0,0,0,0.75)';
-  ctx.lineWidth = 1.2;
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = 1.4;
   ctx.fill();
   ctx.stroke();
   map.addImage(key, ctx.getImageData(0, 0, size, size), { pixelRatio: r });
@@ -418,7 +429,8 @@ const planeShape = (ctx) => {
   for (const [x, y] of [[0, -11], [1.6, -8], [1.6, -2.5], [10, 2.5], [10, 4.5], [1.6, 2], [1.4, 7.5], [4, 9.5], [4, 11], [0, 10],
     [-4, 11], [-4, 9.5], [-1.4, 7.5], [-1.6, 2], [-10, 4.5], [-10, 2.5], [-1.6, -2.5], [-1.6, -8]]) ctx.lineTo(x, y);
 };
-const shipShape = (ctx) => { for (const [x, y] of [[0, -10], [5, 0], [5, 9], [-5, 9], [-5, 0]]) ctx.lineTo(x, y); };
+// Gemi oku koyu haritada kaybolmasın diye büyük ve beyaz kenarlı.
+const shipShape = (ctx) => { for (const [x, y] of [[0, -12], [6.5, -1], [6.5, 11], [-6.5, 11], [-6.5, -1]]) ctx.lineTo(x, y); };
 
 function viewRadiusNm() {
   const b = map.getBounds(), c = map.getCenter();
@@ -473,24 +485,169 @@ function drawMovers() {
       ...planes.map((a) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [a.lon, a.lat] },
         properties: { kind: 'air', id: a.h, icon: a.mil ? mil : civ, rot: a.trk || 0 } })),
       ...shown.map((s) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [s.lon, s.lat] },
-        properties: { kind: 'ship', id: s.mmsi, icon: ensureShape(`ship-${s.type}`, SHIP_COLORS[s.type] || SHIP_COLORS.other, shipShape), rot: s.hdg ?? s.cog ?? 0 } })),
+        properties: { kind: 'ship', id: s.mmsi, icon: ensureShape(`ship-${s.type}`, SHIP_COLORS[s.type] || SHIP_COLORS.other, shipShape, '#ffffff'), rot: s.hdg ?? s.cog ?? 0 } })),
     ],
   });
-  if (infoOpenFor?.startsWith('air:')) { const a = aircraft.get(infoOpenFor.slice(4)); if (a) openInfo({ air: a }); }
+  // Açık uçak panelinde sadece değişen değerler yenilenir (fotoğraf her seferinde yeniden yüklenmesin).
+  if (infoOpenFor?.startsWith('air:')) { const a = aircraft.get(infoOpenFor.slice(4)); if (a) updateAirLive(a); }
 }
 
-function airHtml(a) {
-  const alt = a.alt === 'ground' ? T.onGround : a.alt != null ? `${Math.round(a.alt * 0.3048).toLocaleString(T.locale)} m` : '—';
-  return `<div class="info-cat"><div class="ico" style="background:${a.mil ? MIL_CAT.color : AIR_CAT.color}"><i class="ti ti-plane"></i></div><span>${a.mil ? T.cats.mil : T.cats.aircraft}</span></div>
-    <h3 class="info-title" dir="ltr">${esc(a.f || a.r || a.h)}</h3>
-    <dl class="info-facts">
-      <dt><i class="ti ti-id"></i></dt><dd>${T.reg}: ${esc(a.r || '—')} · ${T.acType}: ${esc(a.t || '—')}</dd>
-      <dt><i class="ti ti-arrow-up"></i></dt><dd>${T.altitude}: ${alt}</dd>
-      <dt><i class="ti ti-gauge"></i></dt><dd>${T.speed}: ${a.gs ? Math.round(a.gs * 1.852).toLocaleString(T.locale) + ' km/h' : '—'}</dd>
-      <dt><i class="ti ti-compass"></i></dt><dd>${T.heading}: ${Math.round(a.trk || 0)}°${a.sq ? ` · Squawk ${esc(a.sq)}` : ''}</dd>
-      <dt><i class="ti ti-gps"></i></dt><dd>${a.lat.toFixed(3)}°, ${a.lon.toFixed(3)}°</dd>
-    </dl>
-    <a class="info-open" href="https://globe.adsb.lol/?icao=${esc(a.h)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> adsb.lol</a>`;
+// ---- Uçak ayrıntıları ----
+// Ücretsiz, anahtarsız ve tarayıcıdan doğrudan: adsbdb (kalkış/varış, havayolu, uçak bilgisi) ve
+// planespotters.net (gerçek fotoğraf; fotoğrafçının adı ve bağlantısı gösterilmek şartıyla).
+// Her uçak için bir kez istenir ve saklanır.
+const airInfo = new Map();
+const getJson = (u) => fetch(u).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+async function loadAirInfo(a) {
+  const key = `${a.h}|${a.f}`;
+  if (airInfo.has(key)) return airInfo.get(key);
+  const info = { loading: true };
+  airInfo.set(key, info);
+  const cs = (a.f || '').trim();
+  const [route, craft, photos] = await Promise.all([
+    cs ? getJson(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(cs)}`) : null,
+    getJson(`https://api.adsbdb.com/v0/aircraft/${a.h}`),
+    getJson(`https://api.planespotters.net/pub/photos/hex/${a.h}`),
+  ]);
+  info.route = route?.response?.flightroute || null;
+  info.craft = typeof craft?.response === 'object' ? craft.response.aircraft : null;
+  info.photo = photos?.photos?.[0] || null;
+  // adsbdb'nin rota verisi gönüllülerden geliyor ve bazen eski/yanlış (ör. Anadolu üzerindeki bir uçuş için
+  // "İstanbul → Detroit"). Uçak kalkış–varış hattının çok dışındaysa rota gösterilmez.
+  if (info.route && !routeFits(a, info.route)) info.route = null;
+  // Rotası bilinmeyen uçuşta en azından havayolu: çağrı kodunun ilk üç harfi (IGO012 -> IndiGo).
+  if (!info.route && /^[A-Z]{3}\d/.test(cs)) {
+    const al = await getJson(`https://api.adsbdb.com/v0/airline/${cs.slice(0, 3)}`);
+    info.airline = Array.isArray(al?.response) ? al.response[0] : null;
+  }
+  info.loading = false;
+  return info;
+}
+
+function distKm(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180;
+  const a = Math.sin(((lat2 - lat1) * r) / 2) ** 2 + Math.cos(lat1 * r) * Math.cos(lat2 * r) * Math.sin(((lon2 - lon1) * r) / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(a));
+}
+function bearing(lat1, lon1, lat2, lon2) {
+  const r = Math.PI / 180;
+  const y = Math.sin((lon2 - lon1) * r) * Math.cos(lat2 * r);
+  const x = Math.cos(lat1 * r) * Math.sin(lat2 * r) - Math.sin(lat1 * r) * Math.cos(lat2 * r) * Math.cos((lon2 - lon1) * r);
+  return (Math.atan2(y, x) / r + 360) % 360;
+}
+
+// Rota inandırıcı mı? Uçak kalkış–varış yolunun makul bir sapmayla üzerinde olmalı (toplam yol en fazla %25 uzar)
+// ve havadaysa varıştan uzakken aşağı yukarı varışa doğru uçmalı.
+function routeFits(a, r) {
+  if (!r.origin || !r.destination) return false;
+  const { latitude: dLat, longitude: dLon } = r.destination;
+  const direct = distKm(r.origin.latitude, r.origin.longitude, dLat, dLon);
+  const toDest = distKm(a.lat, a.lon, dLat, dLon);
+  const via = distKm(r.origin.latitude, r.origin.longitude, a.lat, a.lon) + toDest;
+  if (direct < 50 || via > direct * 1.25 + 150) return false;
+  if (a.gs > 80 && toDest > 300) {
+    const diff = Math.abs(((bearing(a.lat, a.lon, dLat, dLon) - (a.trk || 0)) + 540) % 360 - 180);
+    if (diff > 100) return false;
+  }
+  return true;
+}
+
+function routeProgress(a, r) {
+  const done = distKm(r.origin.latitude, r.origin.longitude, a.lat, a.lon);
+  const left = distKm(a.lat, a.lon, r.destination.latitude, r.destination.longitude);
+  return { pct: Math.round((100 * done) / (done + left || 1)), left: Math.round(left) };
+}
+
+const airAlt = (a) => (a.alt === 'ground' ? T.onGround : a.alt != null ? `${Math.round(a.alt * 0.3048).toLocaleString(T.locale)} m` : '—');
+const airSpeed = (a) => (a.gs ? `${Math.round(a.gs * 1.852).toLocaleString(T.locale)} km/h` : '—');
+const airport = (p) => `<div class="apt"><b>${esc(p.iata_code || p.icao_code)}</b><span>${esc(p.municipality || p.name)}</span><small>${esc(p.country_name || '')}</small></div>`;
+const tile = (icon, label, value, live) => `<div class="tile"><i class="ti ti-${icon}"></i><span>${label}</span><b ${live ? `data-live="${live}"` : ''}>${value}</b></div>`;
+
+function airHtml(a, info) {
+  const r = info?.route;
+  const airline = r?.airline || info?.airline;
+  const craft = info?.craft;
+  const color = a.mil ? MIL_CAT.color : AIR_CAT.color;
+  let photo;
+  if (info?.photo) {
+    photo = `<a class="air-photo" href="${esc(info.photo.link)}" target="_blank" rel="noopener">${imgHtml(info.photo.thumbnail_large?.src || info.photo.thumbnail?.src, '')}</a>
+      <div class="credit">© ${esc(info.photo.photographer)} · planespotters.net</div>`;
+  } else if (craft?.url_photo) {
+    photo = `<div class="air-photo">${imgHtml(craft.url_photo, '')}</div><div class="credit">airport-data.com</div>`;
+  } else {
+    photo = `<div class="air-photo empty" style="--c:${color}"><i class="ti ti-plane"></i></div>`;
+  }
+  let route;
+  if (r?.origin && r?.destination) {
+    const p = routeProgress(a, r);
+    route = `<div class="route">${airport(r.origin)}
+      <div class="route-mid"><div class="route-track"><div class="route-done" data-live="bar" style="width:${p.pct}%"></div>
+        <i class="ti ti-plane" data-live="planepos" style="inset-inline-start:${p.pct}%"></i></div>
+        <small data-live="left">${p.left.toLocaleString(T.locale)} km</small></div>
+      ${airport(r.destination)}</div>`;
+  } else {
+    route = `<div class="route-unknown">${info?.loading ? '…' : T.routeUnknown}</div>`;
+  }
+  const typeName = craft ? `${craft.manufacturer} ${craft.type}` : a.t || '—';
+  return `${photo}
+    <div class="air-head" style="--c:${color}">
+      <span class="air-badge">${a.mil ? T.cats.mil : airline ? esc(airline.name) : T.cats.aircraft}</span>
+      <h3 dir="ltr">${esc(a.f || a.r || a.h)}${r?.callsign_iata ? ` <small>${esc(r.callsign_iata)}</small>` : ''}</h3>
+    </div>
+    ${route}
+    <div class="tiles">
+      ${tile('arrow-up', T.altitude, airAlt(a), 'alt')}
+      ${tile('gauge', T.speed, airSpeed(a), 'speed')}
+      ${tile('compass', T.heading, `${Math.round(a.trk || 0)}°`, 'trk')}
+      ${tile('plane', T.acType, esc(typeName))}
+      ${tile('id', T.reg, esc(craft?.registration || a.r || '—'))}
+      ${tile('building', T.operator, esc(craft?.registered_owner || airline?.name || '—'))}
+    </div>
+    <div class="air-foot"><span dir="ltr">${a.sq ? `Squawk ${esc(a.sq)} · ` : ''}<span data-live="pos">${a.lat.toFixed(3)}°, ${a.lon.toFixed(3)}°</span></span>
+      <a href="https://globe.adsb.lol/?icao=${esc(a.h)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> adsb.lol</a></div>`;
+}
+
+// Panel açıkken uçağın değişen değerlerini ve haritadaki rota çizgisini güncelle.
+function updateAirLive(a) {
+  const body = $('infoBody');
+  const set = (k, v) => { const el = body.querySelector(`[data-live="${k}"]`); if (el) el.textContent = v; };
+  set('alt', airAlt(a));
+  set('speed', airSpeed(a));
+  set('trk', `${Math.round(a.trk || 0)}°`);
+  set('pos', `${a.lat.toFixed(3)}°, ${a.lon.toFixed(3)}°`);
+  const r = airInfo.get(`${a.h}|${a.f}`)?.route;
+  if (r?.origin && r?.destination) {
+    const p = routeProgress(a, r);
+    const bar = body.querySelector('[data-live="bar"]'), pl = body.querySelector('[data-live="planepos"]');
+    if (bar) bar.style.width = `${p.pct}%`;
+    if (pl) pl.style.insetInlineStart = `${p.pct}%`;
+    set('left', `${p.left.toLocaleString(T.locale)} km`);
+    drawRoute(a, r);
+  }
+}
+
+// Haritada uçuşun rotası: kalkıştan uçağa düz, uçaktan varışa kesik çizgi.
+function drawRoute(a, r) {
+  if (!mapReady) return;
+  const line = (from, to, done) => ({ type: 'Feature', properties: { done }, geometry: { type: 'LineString', coordinates: [from, to] } });
+  map.getSource('route').setData({
+    type: 'FeatureCollection',
+    features: r ? [
+      line([r.origin.longitude, r.origin.latitude], [a.lon, a.lat], 1),
+      line([a.lon, a.lat], [r.destination.longitude, r.destination.latitude], 0),
+    ] : [],
+  });
+}
+
+async function openAir(a) {
+  const key = `${a.h}|${a.f}`;
+  openInfo({ air: a, info: airInfo.get(key) });
+  drawRoute(a, null);
+  const info = await loadAirInfo(a);
+  if (infoOpenFor === `air:${a.h}`) {
+    openInfo({ air: a, info });
+    if (info.route?.origin && info.route?.destination) drawRoute(a, info.route);
+  }
 }
 
 function shipHtml(s) {
@@ -596,13 +753,16 @@ function openInfo(target) {
   infoOpenFor = target === 'iss' ? 'iss' : target.rec ? `sat:${target.norad}` : target.air ? `air:${target.air.h}`
     : target.ship ? `ship:${target.ship.mmsi}` : target.id;
   $('infoTitle').textContent = T.details;
-  $('infoBody').innerHTML = target === 'iss' ? issHtml() : target.rec ? satHtml(target) : target.air ? airHtml(target.air)
+  if (!target.air) drawRoute(null, null);
+  $('infoPanel').classList.toggle('air-mode', !!target.air);
+  $('infoBody').innerHTML = target === 'iss' ? issHtml() : target.rec ? satHtml(target) : target.air ? airHtml(target.air, target.info)
     : target.ship ? shipHtml(target.ship) : infoHtml(target);
   const panel = $('infoPanel');
   panel.hidden = false;
   panel.classList.remove('collapsed');
 }
 function closeInfo() {
+  drawRoute(null, null);
   $('infoPanel').hidden = true;
   infoOpenFor = null;
   setActive(null);
