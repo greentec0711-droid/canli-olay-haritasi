@@ -4,7 +4,7 @@ import { geocode } from './geo.mjs';
 import { classify, isExcluded } from './classify.mjs';
 import { get, decodeEntities, stripTags, pool, hash } from './http.mjs';
 
-function toEvent({ id, t, title, text, url, src, lang, kind }) {
+function toEvent({ id, t, title, text, url, src, lang, kind, img }) {
   if (!title || isExcluded(`${title}\n${text}`, url)) return null;
   // Önce başlıkta ara; başlıkta ülkeden daha belirgin bir yer yoksa metne de bak.
   let place = geocode(title);
@@ -16,8 +16,22 @@ function toEvent({ id, t, title, text, url, src, lang, kind }) {
   return {
     id, t, lat: place.lat, lon: place.lon, pid: place.id, cat: classify(`${title}\n${text}`),
     title: title.slice(0, 220), text: text && text !== title ? text.slice(0, 400) : undefined,
-    url, src, lang, kind, mentions: 1,
+    url, src, lang, kind, mentions: 1, img: img || undefined,
   };
+}
+
+// RSS haberinin küçük resmi: media:content, media:thumbnail, enclosure ya da açıklamadaki ilk resim.
+function rssImage(b) {
+  const candidates = [
+    b.match(/<media:(?:content|thumbnail)[^>]+url=["']([^"']+)["'][^>]*>/i)?.[0],
+    b.match(/<enclosure[^>]+type=["']image[^>]*>/i)?.[0],
+    decodeEntities(b).match(/<img[^>]+src=["']([^"']+)["']/i)?.[0],
+  ];
+  for (const c of candidates) {
+    const u = c && decodeEntities(c.match(/(?:url|src)=["']([^"']+)["']/i)?.[1] || '');
+    if (/^https:\/\//.test(u) && !/\.(mp4|mp3|webm)(\?|$)/i.test(u)) return u;
+  }
+  return '';
 }
 
 const tag = (xml, name) => {
@@ -37,7 +51,7 @@ async function readRss(feed, since) {
     const t = Date.parse(decodeEntities(date).trim()) || Date.now();
     if (t < since) continue;
     const text = stripTags(tag(b, 'description') || tag(b, 'summary')).replace(/\s+/g, ' ');
-    const e = toEvent({ id: 'r' + hash(url || title), t: Math.min(t, Date.now()), title, text, url, src: feed.name, lang: feed.lang, kind: 'rss' });
+    const e = toEvent({ id: 'r' + hash(url || title), t: Math.min(t, Date.now()), title, text, url, src: feed.name, lang: feed.lang, kind: 'rss', img: rssImage(b) });
     if (e) out.push(e);
   }
   return out;
@@ -56,7 +70,8 @@ async function readTelegram(ch, since) {
     const full = stripTags(body);
     const [first, ...rest] = full.split('\n').filter((l) => l.trim());
     const title = first.length > 220 ? first.slice(0, 217) + '…' : first;
-    const e = toEvent({ id: 'tg:' + post, t, title, text: [first.length > 220 ? first : '', ...rest].join(' ').trim(), url: `https://t.me/${post}`, src: ch.name, lang: ch.lang, kind: 'telegram' });
+    const img = chunk.match(/tgme_widget_message_photo_wrap[^>]+background-image:url\('([^']+)'\)/)?.[1];
+    const e = toEvent({ id: 'tg:' + post, t, title, text: [first.length > 220 ? first : '', ...rest].join(' ').trim(), url: `https://t.me/${post}`, src: ch.name, lang: ch.lang, kind: 'telegram', img });
     if (e) out.push(e);
   }
   return out;

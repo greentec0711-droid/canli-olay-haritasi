@@ -13,6 +13,11 @@ Arayüz 5 dilde: **Türkçe, Kurmancî, Soranî, English, العربية** (Sora
 | Bölge basını | ~40 RSS akışı: Türkçe, Kurmancî, Soranî, Arapça, Farsça, İngilizce | 0 |
 | Telegram | ~20 herkese açık kanal (t.me/s/… sayfası) | 0 (hesap gerekmez) |
 | Depremler | USGS (M4.5+, son 24 saat) | 0 |
+| Afetler | GDACS (sel, kasırga, yanardağ, orman yangını, kuraklık) | 0 |
+| Roket fırlatmaları | Launch Library 2 | 0 |
+| Uzay İstasyonu (ISS) | wheretheiss.at, tarayıcıda 10 saniyede bir | 0 |
+| Haber başlığı ve görseli | Haber sayfasının kendisi (og:title, og:image) | 0 |
+| Başlık çevirisi | Google Çeviri'nin ücretsiz ucu (resmî değil) | 0 |
 | Veri işleme | GitHub Actions, her 15 dk | 0 (public depo) |
 | Barındırma | GitHub Pages | 0 |
 
@@ -54,6 +59,7 @@ Adresin sonuna parametre ekleyerek siteyi belli bir dilde ve bölgede açabilirs
 
 - `?lang=` — `tr`, `ku`, `ckb`, `en`, `ar`
 - `?region=` — `all`, `tr`, `kurdistan`, `sy`, `iq`, `ir`, `il`, `cy`
+- `?topic=` — `all`, `conflict`, `politics`, `kurdistan`, `disaster`, `space`
 
 Örnek: `https://KULLANICI.github.io/DEPO/?lang=ckb&region=kurdistan`
 

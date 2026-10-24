@@ -14,7 +14,10 @@ export function decodeEntities(s) {
     .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
     .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(+d))
     .replace(/&quot;/g, '"').replace(/&apos;|&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&');
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&(lsquo|rsquo|ldquo|rdquo|ndash|mdash|hellip|laquo|raquo);/g, (_, n) =>
+      ({ lsquo: '‘', rsquo: '’', ldquo: '“', rdquo: '”', ndash: '–', mdash: '—', hellip: '…', laquo: '«', raquo: '»' }[n]))
+    .replace(/&amp;/g, '&');
 }
 
 export function stripTags(html) {

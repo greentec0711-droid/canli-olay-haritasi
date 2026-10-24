@@ -3,11 +3,15 @@
 import zlib from 'node:zlib';
 import { geocode } from './geo.mjs';
 import { isExcluded } from './classify.mjs';
+import { inRegion } from './region.mjs';
 import { get } from './http.mjs';
 
 const BASE = 'http://data.gdeltproject.org/gdeltv2/';
 
-// Odak bölge (FIPS kodları): burada siyasi gelişmeler ve sadece ülke düzeyinde konumlu haberler de alınır.
+// Sadece odak bölgedeki olaylar alınır (region.mjs): dünya geneli kayıtlar çoğunlukla konu dışıydı
+// ve çeviri yükünün büyük kısmını oluşturuyordu.
+
+// Odak ülkeler (FIPS kodları): burada sadece ülke düzeyinde konumlu haberler de alınır.
 const FOCUS = new Set(['TU', 'IZ', 'SY', 'IR', 'IS', 'WE', 'GZ', 'LE', 'CY', 'JO']);
 
 // CAMEO olay kodu -> kategori. Sıra önemli: ilk eşleşen kazanır.
@@ -15,12 +19,11 @@ const RULES = [
   [/^195/, 'airstrike'], [/^194/, 'artillery'], [/^183/, 'bombing'], [/^20/, 'massviolence'],
   [/^19/, 'clash'], [/^18/, 'attack'], [/^17/, 'security'], [/^15/, 'military'], [/^14/, 'protest'],
 ];
-// GDELT'in siyaset kodları çok gürültülü (moda, magazin haberleri bile giriyor); siyaset RSS/Telegram'dan gelir.
-const FOCUS_RULES = [];
+// GDELT'in siyaset kodları alınmaz: çok gürültülü (moda, magazin haberleri bile giriyor); siyaset RSS/Telegram'dan gelir.
 const LANG_BY_TLD = { tr: 'tr', iq: 'ar', sy: 'ar', sa: 'ar', ae: 'ar', eg: 'ar', lb: 'ar', jo: 'ar', qa: 'ar', kw: 'ar', ps: 'ar', ir: 'fa', il: 'he' };
 
-function categorize(code, focus) {
-  for (const [re, cat] of focus ? [...RULES, ...FOCUS_RULES] : RULES) if (re.test(code)) return cat;
+function categorize(code) {
+  for (const [re, cat] of RULES) if (re.test(code)) return cat;
   return null;
 }
 
@@ -61,11 +64,11 @@ function parseExport(csv, translated) {
     if (c.length < 61 || c[25] !== '1') continue; // sadece haberin ana olayı
     const country = c[53];
     const focus = FOCUS.has(country);
-    const cat = categorize(c[26], focus);
+    const cat = categorize(c[26]);
     if (!cat) continue;
     if (+c[51] === 1 && !focus) continue; // ülke merkezi: odak bölge dışında atla
     const lat = +c[56], lon = +c[57];
-    if (!c[56] || !c[57] || Number.isNaN(lat) || Number.isNaN(lon)) continue;
+    if (!c[56] || !c[57] || Number.isNaN(lat) || Number.isNaN(lon) || !inRegion(lat, lon)) continue;
     const url = c[60].trim();
     let host = '';
     try { host = new URL(url).hostname.replace(/^www\./, ''); } catch {}

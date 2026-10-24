@@ -13,10 +13,30 @@ const CATS = {
   protest:      { icon: 'speakerphone',  color: '#0f766e' },
   politics:     { icon: 'building-bank', color: '#0284c7' },
   earthquake:   { icon: 'activity',      color: '#78716c' },
+  disaster:     { icon: 'alert-triangle', color: '#e8590c' },
+  launch:       { icon: 'rocket',        color: '#4c6ef5' },
   news:         { icon: 'news',          color: '#64748b' },
   manual:       { icon: 'pin',           color: '#111827' },
 };
+// Afetlerde simge türe, renk GDACS alarm düzeyine göre.
+const DISASTER_ICONS = { flood: 'ripple', cyclone: 'tornado', volcano: 'volcano', wildfire: 'flame', drought: 'sun-high' };
+const ALERT_COLORS = { green: '#2f9e44', orange: '#e8590c', red: '#c92a2a' };
 const NEWS_LANGS = ['tr', 'ku', 'ckb', 'ar', 'fa', 'en', 'other'];
+
+// Haber akışındaki konu filtreleri.
+const CONFLICT = new Set(['massviolence', 'airstrike', 'bombing', 'artillery', 'clash', 'attack', 'security', 'military']);
+const KURD_WORDS = /kurd|kürt|kurdî|kurdistan|kürdistan|rojava|rojhilat|başûr|pkk|ypg|ypj|sdg|sdf|hsd|peşmerge|pêşmerge|peshmerga|کورد|كرد|كورد/i;
+// Kürt nüfusun yoğun olduğu bölgeler, kaba kutular: [güney, batı, kuzey, doğu]
+const KURD_AREAS = [[36.5, 37.5, 40.3, 44.8], [34.3, 42.3, 37.4, 46.4], [35.8, 36.5, 37.4, 42.4], [33.5, 44, 37.9, 48.5]];
+const TOPICS = {
+  all: () => true,
+  conflict: (e) => CONFLICT.has(e.cat),
+  politics: (e) => e.cat === 'politics',
+  kurdistan: (e) => KURD_AREAS.some(([s, w, n, east]) => e.lat >= s && e.lat <= n && e.lon >= w && e.lon <= east) ||
+    KURD_WORDS.test(`${e.title} ${e.text || ''}`),
+  disaster: (e) => e.cat === 'earthquake' || e.cat === 'disaster',
+  space: (e) => e.cat === 'launch',
+};
 const REFRESH_MS = 60e3;
 
 const $ = (id) => document.getElementById(id);
@@ -24,7 +44,7 @@ const $ = (id) => document.getElementById(id);
 const PARAMS = new URLSearchParams(location.search);
 const state = {
   events: [], updated: 0, fresh: 0, off: new Set(), q: '', hours: 6, inView: true, activeId: null,
-  lang: pickLang(), newsLang: 'all', region: null, panel: null,
+  lang: pickLang(), newsLang: 'all', region: null, panel: null, topic: 'all',
 };
 const markers = new Map();
 const PLACES = window.__PLACES__ || [];
@@ -61,7 +81,7 @@ new LayersButton().addTo(map);
 try { maplibregl.setRTLTextPlugin('https://cdn.jsdelivr.net/npm/@mapbox/mapbox-gl-rtl-text@0.2.3/mapbox-gl-rtl-text.min.js', true); } catch {}
 const base = L.maplibreGL({
   style: 'https://tiles.openfreemap.org/styles/dark',
-  attribution: '<a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · GDELT, USGS, RSS, Telegram',
+  attribution: '<a href="https://openfreemap.org">OpenFreeMap</a> &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> · GDELT, USGS, GDACS, Launch Library, wheretheiss.at, RSS, Telegram',
 }).addTo(map);
 const gl = base.getMaplibreMap();
 // Hazır koyu tema neredeyse siyah; kara, deniz, sınır ve yazıları biraz açıyoruz.
@@ -92,9 +112,32 @@ function applyMapLanguage() {
 const cluster = L.markerClusterGroup({ maxClusterRadius: 40, showCoverageOnHover: false, spiderfyOnMaxZoom: true });
 map.addLayer(cluster);
 
+// Uluslararası Uzay İstasyonu: tarayıcı 10 saniyede bir anlık konumunu çeker (wheretheiss.at, ücretsiz, anahtarsız).
+const ISS_CAT = { icon: 'satellite', color: '#7048e8' };
+const issMarker = L.marker([0, 0], {
+  icon: L.divIcon({ className: 'marker-ico', html: `<div class="ico iss" style="background:${ISS_CAT.color}"><i class="ti ti-satellite"></i></div>`, iconSize: [30, 30], iconAnchor: [15, 15] }),
+  zIndexOffset: 1000,
+}).bindPopup(() => issPopupHtml());
+let iss = null;
+const issPopupHtml = () => (iss ? `<div class="pop-title"><i class="ti ti-satellite" style="color:${ISS_CAT.color}"></i> ${T.cats.iss}</div>
+  <div class="pop-meta">${T.altitude}: ${Math.round(iss.altitude)} km · ${T.speed}: ${Math.round(iss.velocity).toLocaleString(T.locale)} km/h</div>
+  <div class="pop-meta">${iss.latitude.toFixed(2)}°, ${iss.longitude.toFixed(2)}°</div>` : T.cats.iss);
+async function updateIss() {
+  if (state.off.has('iss')) { issMarker.remove(); return; }
+  try {
+    iss = await (await fetch('https://api.wheretheiss.at/v1/satellites/25544')).json();
+    issMarker.setLatLng([iss.latitude, iss.longitude]).addTo(map);
+    if (issMarker.isPopupOpen()) issMarker.getPopup().setContent(issPopupHtml());
+  } catch {}
+}
+setInterval(updateIss, 10000);
+
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const cat = (e) => CATS[e.cat] || CATS.news;
-const icoHtml = (e) => `<div class="ico" style="background:${cat(e).color}"><i class="ti ti-${cat(e).icon}"></i></div>`;
+const iconOf = (e) => DISASTER_ICONS[e.sub] || cat(e).icon;
+const colorOf = (e) => ALERT_COLORS[e.alert] || cat(e).color;
+const icoHtml = (e) => `<div class="ico" style="background:${colorOf(e)}"><i class="ti ti-${iconOf(e)}"></i></div>`;
+const imgHtml = (src, cls) => `<img class="${cls}" src="${esc(src)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()">`;
 const newsLangOf = (e) => (NEWS_LANGS.includes(e.lang) ? e.lang : 'other');
 
 function placeName(e) {
@@ -111,13 +154,22 @@ function ago(t) {
   return h < 24 ? T.hour(h) : T.day(Math.floor(h / 24));
 }
 
+// Fırlatmalar ileri tarihli: "2 gün 5 saat sonra" gibi geri sayım gösterilir.
+function untilText(t) {
+  const m = Math.max(0, Math.round((t - Date.now()) / 60e3));
+  const d = Math.floor(m / 1440), h = Math.floor((m % 1440) / 60);
+  return T.inTime(d ? `${d} ${T.dayWord} ${h} ${T.hourWord}` : h ? `${h} ${T.hourWord} ${m % 60} ${T.minWord}` : `${m} ${T.minWord}`);
+}
+const whenOf = (e) => (e.cat === 'launch' ? (e.t > Date.now() ? untilText(e.t) : T.launched) : ago(e.t));
+const catLabel = (e) => (e.cat === 'disaster' ? `${T.subs[e.sub] || T.cats.disaster} · ${T.alerts[e.alert] || ''}` : T.cats[e.cat] || '');
+
 // Başlık seçili dilde: haberin kendi dili buysa özgün başlık, değilse hazır çeviri, o da yoksa özgün başlık.
 const isTranslated = (e) => e.lang !== state.lang && !!e.tt?.[state.lang];
 const titleOf = (e) => (isTranslated(e) ? e.tt[state.lang] : e.title);
 const origNote = (e) => (isTranslated(e) ? T.orig(T.langs[newsLangOf(e)] || '') : '');
 
 function translateLink(e) {
-  if (e.lang === state.lang || isTranslated(e)) return '';
+  if (e.lang === state.lang || isTranslated(e) || e.cat === 'launch') return '';
   const url = `https://translate.google.com/?sl=auto&tl=${state.lang}&text=${encodeURIComponent(e.title)}&op=translate`;
   return `<a href="${esc(url)}" target="_blank" rel="noopener">${T.translate}</a>`;
 }
@@ -127,10 +179,11 @@ function sourceLink(e) {
 }
 
 function popupHtml(e) {
-  return `<div class="pop-title" dir="auto"><i class="ti ti-${cat(e).icon}" style="color:${cat(e).color}"></i> ${esc(titleOf(e))}</div>
+  return `${e.img ? imgHtml(e.img, 'pop-img') : ''}
+    <div class="pop-title" dir="auto"><i class="ti ti-${iconOf(e)}" style="color:${colorOf(e)}"></i> ${esc(titleOf(e))}</div>
     ${isTranslated(e) ? `<div class="pop-meta" dir="auto">${esc(origNote(e))}: ${esc(e.title)}</div>` : ''}
     ${e.text ? `<div class="pop-text" dir="auto">${esc(e.text.slice(0, 300))}${e.text.length > 300 ? '…' : ''}</div>` : ''}
-    <div class="pop-meta">${esc(placeName(e))} · ${ago(e.t)} · ${T.cats[e.cat] || ''}</div>
+    <div class="pop-meta">${esc(placeName(e))} · ${whenOf(e)} · ${esc(catLabel(e))}</div>
     <div class="pop-meta">${T.source}: ${sourceLink(e)} ${translateLink(e) ? '· ' + translateLink(e) : ''}</div>`;
 }
 
@@ -146,17 +199,24 @@ function inRange() {
 
 function filtered() {
   const q = state.q.toLowerCase();
-  return inRange().filter((e) => !state.off.has(e.cat) &&
+  return inRange().filter((e) => !state.off.has(e.cat) && TOPICS[state.topic](e) &&
     (!q || `${e.title} ${titleOf(e)} ${e.text || ''} ${placeName(e)} ${e.place || ''} ${e.src || ''}`.toLowerCase().includes(q)));
+}
+
+function renderTopics() {
+  $('topics').innerHTML = Object.keys(TOPICS).map((k) =>
+    `<button class="${state.topic === k ? 'active' : ''}" data-topic="${k}">${T.topics[k]}</button>`).join('');
 }
 
 // Katmanlar paneli: her kategori için açma/kapama kutusu ve olay sayısı.
 function renderLayers() {
   const counts = {};
   for (const e of inRange()) counts[e.cat] = (counts[e.cat] || 0) + 1;
-  $('chips').innerHTML = Object.entries(CATS).filter(([k]) => counts[k]).map(([k, c]) =>
+  const row = (k, c, n) =>
     `<label class="layer"><input type="checkbox" data-cat="${k}" ${state.off.has(k) ? '' : 'checked'}>
-      <span class="ico sm" style="background:${c.color}"><i class="ti ti-${c.icon}"></i></span>${T.cats[k]}<span class="n">${counts[k]}</span></label>`).join('');
+      <span class="ico sm" style="background:${c.color}"><i class="ti ti-${c.icon}"></i></span>${T.cats[k]}<span class="n">${n}</span></label>`;
+  $('chips').innerHTML = Object.entries(CATS).filter(([k]) => counts[k]).map(([k, c]) => row(k, c, counts[k])).join('') +
+    row('iss', ISS_CAT, '');
 }
 
 function renderMarkers(list) {
@@ -175,7 +235,10 @@ function renderMarkers(list) {
 
 function renderList(list) {
   const b = map.getBounds();
-  const shown = state.inView ? list.filter((e) => b.contains([e.lat, e.lon])) : list;
+  // Fırlatmalar dünyanın her yerinde ve ileri tarihli: sadece "Uzay" konusunda, en yakını üstte listelenir.
+  let shown = state.topic === 'space'
+    ? list.slice().sort((x, y) => x.t - y.t)
+    : list.filter((e) => e.cat !== 'launch' && (!state.inView || b.contains([e.lat, e.lon])));
   $('status').textContent = [
     T.listed(shown.length),
     state.updated ? `${T.updated}: ${ago(state.updated)}` : T.noData,
@@ -185,11 +248,14 @@ function renderList(list) {
     <li class="item ${e.id === state.activeId ? 'active' : ''} ${e.isNew ? 'new' : ''}" data-id="${esc(e.id)}">
       <div class="head">
         ${icoHtml(e)}
-        <span class="when">${ago(e.t)}</span>
+        <span class="when">${whenOf(e)}</span>
         ${e.url ? `<a class="src" href="${esc(e.url)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i>${T.source}</a>` : ''}
       </div>
-      <div class="title" dir="auto" ${isTranslated(e) ? `title="${esc(e.title)}"` : ''}>${e.isNew ? `<span class="badge">${T.badge}</span>` : ''}${esc(titleOf(e))}</div>
-      <div class="meta">${esc(placeName(e))} · ${esc(e.src || '')}${origNote(e) ? ' · ' + esc(origNote(e)) : ''}${translateLink(e) ? ' · ' + translateLink(e) : ''}</div>
+      <div class="row">
+        <div class="title" dir="auto" ${isTranslated(e) ? `title="${esc(e.title)}"` : ''}>${e.isNew ? `<span class="badge">${T.badge}</span>` : ''}${esc(titleOf(e))}</div>
+        ${e.img ? imgHtml(e.img, 'thumb') : ''}
+      </div>
+      <div class="meta">${esc(placeName(e))} · ${esc(e.src || '')}${e.cat === 'disaster' ? ' · ' + esc(catLabel(e)) : ''}${origNote(e) ? ' · ' + esc(origNote(e)) : ''}${translateLink(e) ? ' · ' + translateLink(e) : ''}</div>
     </li>`).join('');
 }
 
@@ -263,6 +329,7 @@ function applyLanguage() {
   $('newsLangLabel').textContent = T.newsLang;
   renderRegions();
   renderPanels();
+  renderTopics();
   applyMapLanguage();
   render();
 }
@@ -297,7 +364,11 @@ async function load() {
   const extra = (manual?.events || []).map((e, i) => ({
     id: 'm' + i, cat: 'manual', src: '', ...e, t: new Date(e.time ?? e.t).getTime(),
   }));
-  const events = [...extra, ...(auto?.events || [])].sort((a, b) => b.t - a.t);
+  const launches = (auto?.launches || []).map((l) => ({
+    id: l.id, cat: 'launch', kind: 'launch', t: l.net, lat: l.lat, lon: l.lon, title: l.name,
+    place: l.place, src: l.provider, img: l.img, text: l.pad, lang: 'en',
+  }));
+  const events = [...extra, ...(auto?.events || []), ...launches].sort((a, b) => b.t - a.t);
   // İlk yüklemeden sonra gelen olaylar "YENİ" olarak işaretlenir.
   const first = !state.events.length;
   const before = new Map(state.events.map((e) => [e.id, e]));
@@ -342,7 +413,17 @@ $('chips').addEventListener('change', (ev) => {
   const k = ev.target.dataset.cat;
   if (!k) return;
   ev.target.checked ? state.off.delete(k) : state.off.add(k);
+  if (k === 'iss') updateIss();
   render();
+});
+$('topics').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-topic]');
+  if (!b) return;
+  state.topic = b.dataset.topic;
+  renderTopics();
+  render();
+  // Fırlatma rampaları dünyanın her yerinde: Uzay seçilince harita dünyayı gösterir.
+  if (state.topic === 'space') map.flyTo([25, 20], 2, { duration: 0.8 });
 });
 $('list').addEventListener('click', (ev) => {
   if (ev.target.closest('a')) return;
@@ -365,6 +446,9 @@ if (REGIONS[PARAMS.get('region')]) {
   map.fitBounds(REGIONS[state.region]);
 }
 if (['lang', 'time', 'layers'].includes(PARAMS.get('panel'))) togglePanel(PARAMS.get('panel'));
+if (TOPICS[PARAMS.get('topic')]) state.topic = PARAMS.get('topic');
+if (state.topic === 'space') map.setView([25, 20], 2);
 applyLanguage();
 load();
+updateIss();
 setInterval(load, REFRESH_MS);
