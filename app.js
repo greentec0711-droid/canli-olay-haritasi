@@ -386,7 +386,7 @@ async function refreshSats() {
 // Uçaklar: Cloudflare'deki küçük aracı servis (worker/) üzerinden adsb.lol / adsb.fi.
 // Görünen bölgenin uçakları 20 saniyede, dünya genelindeki askeri uçuşlar 60 saniyede bir istenir;
 // aradaki sürede her uçak son hızı ve rotasıyla ileri hesaplanır (ölü hesaplama), böylece akıcı hareket eder.
-const AIR_API = ''; // Worker yayınlanınca adresi buraya yazılır
+const AIR_API = 'https://canli-olay-ucak.greentec0711.workers.dev'; // worker/src/index.js
 const AIR_CAT = { icon: 'plane', color: '#f59f00' };
 const MIL_CAT = { icon: 'plane', color: '#e03131' };
 const SHIP_COLORS = { cargo: '#2f9e44', tanker: '#c2255c', passenger: '#1c7ed6', fishing: '#f08c00', military: '#495057', other: '#868e96' };
