@@ -9,6 +9,7 @@
   --live: #e5484d;
   --top: 46px;
   --feed-w: 400px;
+  --ticker-h: 36px;
 }
 
 * { box-sizing: border-box; }
@@ -19,7 +20,7 @@ button { font: inherit; color: inherit; }
 
 /* Yerleşim: solda harita (üstünde bölge sekmeleri), sağda tam boy haber sütunu */
 .app { position: fixed; inset: 0; display: grid;
-  grid-template-columns: minmax(0, 1fr) var(--feed-w); grid-template-rows: var(--top) minmax(0, 1fr); }
+  grid-template-columns: minmax(0, 1fr) var(--feed-w); grid-template-rows: var(--top) minmax(0, 1fr) var(--ticker-h); }
 .topbar { grid-column: 1; grid-row: 1; display: flex; align-items: center; gap: 14px; padding: 0 14px;
   border-bottom: 1px solid var(--line); min-width: 0; }
 .mapwrap { grid-column: 1; grid-row: 2; position: relative; min-height: 0; }
@@ -184,3 +185,31 @@ select { font: inherit; border: 1px solid var(--line); border-radius: 6px; paddi
 .air-foot { display: flex; justify-content: space-between; gap: 8px; margin-top: 10px; font-size: 11.5px; color: var(--muted); }
 .air-foot a { color: var(--accent); text-decoration: none; font-weight: 600; white-space: nowrap; }
 @media (max-width: 760px) { .info-panel.air-mode { width: calc(100% - 24px); } .air-photo { height: 150px; } }
+
+/* Son dakika şeridi */
+.ticker { grid-column: 1 / -1; grid-row: 3; display: flex; align-items: center; background: #111827; color: #e5e7eb;
+  border-top: 1px solid #000; overflow: hidden; min-width: 0; }
+.ticker-label { flex-shrink: 0; height: 100%; display: flex; align-items: center; gap: 6px; padding: 0 14px; background: var(--live);
+  color: #fff; font-weight: 800; font-size: 12px; letter-spacing: .6px; white-space: nowrap; }
+.ticker-label::before { content: ''; width: 8px; height: 8px; border-radius: 50%; background: #fff; animation: blink 1.2s infinite; }
+@keyframes blink { 50% { opacity: .2; } }
+.ticker-viewport { flex: 1; overflow: hidden; height: 100%; display: flex; align-items: center; min-width: 0; }
+.ticker-track { display: inline-flex; white-space: nowrap; animation: ticker 120s linear infinite; will-change: transform; }
+.ticker:hover .ticker-track { animation-play-state: paused; }
+@keyframes ticker { from { transform: translateX(0); } to { transform: translateX(-50%); } }
+[dir="rtl"] .ticker-track { animation-name: ticker-rtl; }
+@keyframes ticker-rtl { from { transform: translateX(0); } to { transform: translateX(50%); } }
+.tick { display: inline-flex; align-items: center; gap: 7px; padding: 0 18px; color: #e5e7eb; text-decoration: none; font-size: 13.5px;
+  border-inline-end: 1px solid #374151; }
+.tick:hover { color: #fff; text-decoration: underline; }
+.tick .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.tick .when { color: #9ca3af; font-size: 12px; }
+.tick .where { color: #9ca3af; font-size: 12px; }
+
+/* Harita türü seçimi (Katmanlar paneli) */
+.basemaps { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding-bottom: 8px; margin-bottom: 6px; border-bottom: 1px solid var(--line);
+  font-size: 12px; color: var(--muted); }
+.basemaps button { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); background: #fff; border-radius: 999px;
+  padding: 3px 9px; cursor: pointer; font-size: 12px; }
+.basemaps button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+@media (max-width: 760px) { :root { --ticker-h: 32px; } .ticker-label { padding: 0 8px; font-size: 11px; } }

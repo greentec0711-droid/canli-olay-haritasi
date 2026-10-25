@@ -38,6 +38,7 @@
           <button class="panel-btn" data-act="close" aria-label="×"><i class="ti ti-x"></i></button>
         </header>
         <div class="panel-body">
+          <div id="basemaps" class="basemaps"></div>
           <div id="chips" class="layer-list"></div>
           <label class="check"><input id="inView" type="checkbox" checked> <span id="inViewLabel"></span></label>
         </div>
@@ -68,6 +69,12 @@
       <div id="status" class="status"></div>
       <ol id="list" class="list"></ol>
     </aside>
+
+    <!-- Son dakika şeridi: fare üzerine gelince durur, habere tıklanınca kaynağı açılır. -->
+    <footer class="ticker">
+      <span id="tickerLabel" class="ticker-label"></span>
+      <div class="ticker-viewport"><div id="tickerTrack" class="ticker-track"></div></div>
+    </footer>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>

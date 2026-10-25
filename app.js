@@ -53,12 +53,27 @@ const REGIONS = {
   cy: [[32.2, 34.5], [34.7, 35.8]],
 };
 
+// Bölge sınırları (data/regions.json, scripts/build-regions.mjs ile üretilir): bir bölge sekmesi seçiliyken
+// harita ve haber akışı sadece o sınırların içindeki olayları gösterir.
+let REGION_SHAPES = {};
+function inRing(lon, lat, ring) {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i], [xj, yj] = ring[j];
+    if ((yi > lat) !== (yj > lat) && lon < ((xj - xi) * (lat - yi)) / (yj - yi) + xi) inside = !inside;
+  }
+  return inside;
+}
+const inRegionShape = (e, key) => (REGION_SHAPES[key] || []).some((r) => inRing(e.lon, e.lat, r));
+const activeRegion = () => (state.region && state.region !== 'all' && REGION_SHAPES[state.region] ? state.region : null);
+
 const $ = (id) => document.getElementById(id);
 // Paylaşılabilir bağlantılar: ?lang=ckb&region=kurdistan&topic=kurdistan gibi.
 const PARAMS = new URLSearchParams(location.search);
 const state = {
   events: [], updated: 0, fresh: 0, off: new Set(), q: '', hours: 6, inView: true, activeId: null,
   lang: pickLang(), newsLang: 'all', region: null, panel: null, topic: 'all',
+  basemap: (() => { try { return localStorage.getItem('basemap') || 'dark'; } catch { return 'dark'; } })(),
 };
 state.off.add('starlink'); // ~10.000 uydu: varsayılan kapalı, Katmanlar panelinden açılır
 const byId = new Map();
@@ -102,8 +117,11 @@ class ButtonsControl {
     const el = document.createElement('div');
     el.className = 'maplibregl-ctrl maplibregl-ctrl-group';
     el.innerHTML = `<button id="layersBtn" type="button"><i class="ti ti-stack-2"></i></button>
+      <button id="basemapBtn" type="button"><i class="ti ti-map-2"></i></button>
       <button id="resetPanelsBtn" type="button"><i class="ti ti-layout-off"></i></button>`;
     el.querySelector('#layersBtn').addEventListener('click', () => togglePanel('layers'));
+    // Harita türü düğmesi: koyu → uydu → arazi → koyu
+    el.querySelector('#basemapBtn').addEventListener('click', () => setBasemap(BASEMAPS[(BASEMAPS.indexOf(state.basemap) + 1) % BASEMAPS.length]));
     el.querySelector('#resetPanelsBtn').addEventListener('click', resetPanels);
     return el;
   }
@@ -113,10 +131,34 @@ map.addControl(new ButtonsControl(), 'bottom-left');
 
 // Harita üzerindeki şehir/ülke adlarını seçili dilde göster; o dilde ad yoksa sıradaki dile düş.
 const MAP_LANGS = { tr: ['tr', 'en'], ku: ['ku', 'kmr', 'en'], ckb: ['ckb', 'ar', 'fa'], en: ['en'], ar: ['ar', 'en'] };
+
+// Kürtçe yer adları: OpenStreetMap'teki Kürtçe ad yoksa, Kürdistan sınırı içindeki yerler için
+// Wikidata'dan derlenen tablodan (data/kurdish-names.json, scripts/build-kurdish-names.mjs) yerel ada bakılır.
+let kurdNames = null;
+async function ensureKurdNames() {
+  if (!kurdNames) kurdNames = (await loadJson('data/kurdish-names.json')) || {};
+}
+function kurdishLookup(target, fallback) {
+  const table = kurdNames?.[target];
+  if (!table || !REGION_SHAPES.kurdistan) return fallback;
+  const pairs = Object.entries(table).flat();
+  if (!pairs.length) return fallback;
+  const area = { type: 'MultiPolygon', coordinates: REGION_SHAPES.kurdistan.map((r) => [r]) };
+  return ['case', ['within', area], ['match', ['get', 'name'], ...pairs, fallback], fallback];
+}
+
 function applyMapLanguage() {
   const style = map.getStyle();
   if (!style) return;
-  const field = ['coalesce', ...MAP_LANGS[state.lang].map((l) => ['get', `name:${l}`]), ['get', 'name']];
+  let field = ['coalesce', ...MAP_LANGS[state.lang].map((l) => ['get', `name:${l}`]), ['get', 'name']];
+  if (state.lang === 'ku' || state.lang === 'ckb') {
+    if (!kurdNames) { ensureKurdNames().then(applyMapLanguage); }
+    else if (state.lang === 'ku') {
+      field = ['coalesce', ['get', 'name:ku'], ['get', 'name:kmr'], kurdishLookup('ku', ['get', 'name:en']), ['get', 'name']];
+    } else {
+      field = ['coalesce', ['get', 'name:ckb'], kurdishLookup('ckb', ['get', 'name:ar']), ['get', 'name:fa'], ['get', 'name']];
+    }
+  }
   for (const l of style.layers) {
     if (l.type === 'symbol' && /^(place_|water_name)/.test(l.id)) {
       try { map.setLayoutProperty(l.id, 'text-field', field); } catch {}
@@ -140,7 +182,10 @@ map.on('style.load', () => {
   for (const l of map.getStyle().layers) if (l.id.startsWith('place_')) set(l.id, 'text-color', '#a9b0bf');
   applyMapLanguage();
   addEventLayers();
+  addBaseLayers();
   mapReady = true;
+  drawRegion();
+  setBasemap(state.basemap);
   render();
   drawMovers();
   updateSatPositions();
@@ -148,8 +193,88 @@ map.on('style.load', () => {
 // Kaynak bilgisi haritanın altını kaplamasın: başta kapalı, (i) düğmesiyle açılır.
 map.once('load', () => document.querySelector('.maplibregl-ctrl-attrib')?.classList.remove('maplibregl-compact-show'));
 
+// Seçili bölgenin haritada gösterimi: Kürdistan bayrak renkleriyle boyanır ve adı yazılır, ülkeler ince çizgiyle.
+function drawRegion() {
+  if (!mapReady) return;
+  const key = activeRegion();
+  const kurd = key === 'kurdistan' ? 1 : 0;
+  const features = key ? REGION_SHAPES[key].map((ring) => ({ type: 'Feature', properties: { kurd }, geometry: { type: 'Polygon', coordinates: [ring] } })) : [];
+  // Kürdistan adı en büyük parçanın ortasına yazılır.
+  if (kurd) features.push({ type: 'Feature', properties: { kurd, label: T.regions.kurdistan }, geometry: { type: 'Point', coordinates: [42.6, 37.6] } });
+  map.getSource('region').setData({ type: 'FeatureCollection', features });
+}
+
+// ---------------- Harita türü: koyu / uydu / arazi ----------------
+// Uydu: Esri World Imagery. Arazi: AWS açık yükseklik verisinden (Terrain Tiles) gölgelendirilmiş kabartma.
+// İkisi de ücretsiz ve anahtarsız. Yollar, sınırlar ve yer adları her türde üstte kalır.
+const BASEMAPS = ['dark', 'satellite', 'terrain'];
+function addBaseLayers() {
+  const style = map.getStyle();
+  // Uydu/kabartma katmanları alan dolgularının üstüne, yolların ve yazıların altına girer.
+  const before = style.layers.find((l) => l.type === 'line' || l.type === 'symbol')?.id;
+  map.addSource('sat', {
+    type: 'raster', tileSize: 256, maxzoom: 19,
+    tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
+    attribution: 'Uydu: © Esri, Maxar, Earthstar Geographics',
+  });
+  map.addLayer({ id: 'sat', type: 'raster', source: 'sat', layout: { visibility: 'none' } }, before);
+  map.addSource('dem', {
+    type: 'raster-dem', encoding: 'terrarium', tileSize: 256, maxzoom: 14,
+    tiles: ['https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png'],
+    attribution: 'Arazi: AWS Terrain Tiles (Mapzen)',
+  });
+  map.addLayer({
+    id: 'hillshade', type: 'hillshade', source: 'dem', layout: { visibility: 'none' },
+    paint: { 'hillshade-exaggeration': 0.6, 'hillshade-shadow-color': '#05070c', 'hillshade-highlight-color': '#c3cad6', 'hillshade-accent-color': '#3b4252' },
+  }, before);
+}
+function setBasemap(mode) {
+  state.basemap = BASEMAPS.includes(mode) ? mode : 'dark';
+  try { localStorage.setItem('basemap', state.basemap); } catch {}
+  if (mapReady) {
+    map.setLayoutProperty('sat', 'visibility', state.basemap === 'satellite' ? 'visible' : 'none');
+    map.setLayoutProperty('hillshade', 'visibility', state.basemap === 'terrain' ? 'visible' : 'none');
+    // Uydu görüntüsü üzerinde yazılar koyu kenarla okunur kalsın.
+    for (const l of map.getStyle().layers) {
+      if (l.type === 'symbol' && /^(place_|water_name)/.test(l.id)) {
+        map.setPaintProperty(l.id, 'text-color', state.basemap === 'satellite' ? '#ffffff' : '#a9b0bf');
+        map.setPaintProperty(l.id, 'text-halo-color', state.basemap === 'satellite' ? 'rgba(0,0,0,0.85)' : 'rgba(0,0,0,0.5)');
+        map.setPaintProperty(l.id, 'text-halo-width', state.basemap === 'satellite' ? 1.4 : 1);
+      }
+    }
+  }
+  renderBasemaps();
+}
+function renderBasemaps() {
+  const el = $('basemaps');
+  if (!el) return;
+  el.innerHTML = `<span>${T.basemap}</span>` + BASEMAPS.map((m) =>
+    `<button data-basemap="${m}" class="${m === state.basemap ? 'active' : ''}"><i class="ti ti-${{ dark: 'moon', satellite: 'satellite', terrain: 'mountain' }[m]}"></i>${T.basemaps[m]}</button>`).join('');
+}
+
 // Olaylar tek bir GeoJSON kaynağında; yakın olaylar sayılı kümeler hâlinde birleşir.
 function addEventLayers() {
+  // Seçili bölge (en altta).
+  map.addSource('region', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+  map.addLayer({
+    id: 'region-fill', type: 'fill', source: 'region', filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'fill-color': ['case', ['==', ['get', 'kurd'], 1], '#ffd43b', '#4dabf7'], 'fill-opacity': ['case', ['==', ['get', 'kurd'], 1], 0.16, 0.05] },
+  });
+  map.addLayer({
+    id: 'region-line-outer', type: 'line', source: 'region', filter: ['==', ['geometry-type'], 'Polygon'],
+    paint: { 'line-color': ['case', ['==', ['get', 'kurd'], 1], '#e03131', '#4dabf7'], 'line-width': ['case', ['==', ['get', 'kurd'], 1], 5, 1.5], 'line-opacity': 0.85 },
+  });
+  map.addLayer({
+    id: 'region-line-inner', type: 'line', source: 'region', filter: ['all', ['==', ['geometry-type'], 'Polygon'], ['==', ['get', 'kurd'], 1]],
+    paint: { 'line-color': '#2f9e44', 'line-width': 2, 'line-offset': 3 },
+  });
+  map.addLayer({
+    id: 'region-label', type: 'symbol', source: 'region', filter: ['==', ['geometry-type'], 'Point'],
+    layout: { 'text-field': ['get', 'label'], 'text-font': ['Noto Sans Regular'], 'text-size': ['interpolate', ['linear'], ['zoom'], 3, 16, 7, 30],
+      'text-letter-spacing': 0.15, 'text-allow-overlap': true },
+    paint: { 'text-color': '#ffd43b', 'text-halo-color': 'rgba(0,0,0,0.7)', 'text-halo-width': 1.5, 'text-opacity': 0.9 },
+  });
+
   // Uydular olayların altında, küçük renkli noktalar.
   map.addSource('sats', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
   map.addLayer({
@@ -863,7 +988,9 @@ function inRange() {
 
 function filtered() {
   const q = state.q.toLowerCase();
+  const reg = activeRegion();
   return inRange().filter((e) => !state.off.has(e.cat) && TOPICS[state.topic](e) &&
+    (!reg || e.cat === 'launch' || inRegionShape(e, reg)) &&
     (!q || `${e.title} ${titleOf(e)} ${e.text || ''} ${placeName(e)} ${e.place || ''} ${e.src || ''}`.toLowerCase().includes(q)));
 }
 
@@ -914,11 +1041,30 @@ function renderList(list) {
     </li>`).join('');
 }
 
+// ---------------- Son dakika şeridi ----------------
+// Sayfanın altında en yeni haberler sağdan sola kayar; fare üzerine gelince durur, tıklanınca haberin kendisi açılır.
+let tickerKey = '';
+function renderTicker(list) {
+  const items = list.filter((e) => e.cat !== 'launch' && e.url && e.kind !== 'usgs').slice(0, 30);
+  const key = state.lang + items.map((e) => e.id).join(',');
+  if (key === tickerKey) return;
+  tickerKey = key;
+  const html = items.map((e) => `<a class="tick" href="${esc(e.url)}" target="_blank" rel="noopener">
+      <span class="dot" style="background:${colorOf(e)}"></span><span class="when">${whenOf(e)}</span>
+      <span dir="auto">${esc(titleOf(e))}</span><span class="where">${esc(placeName(e))}</span></a>`).join('');
+  const track = $('tickerTrack');
+  // İçerik iki kez yazılır: ilk kopya bitince ikincisi devraldığı için şerit kesintisiz döner.
+  track.innerHTML = html + html;
+  const width = track.scrollWidth / 2;
+  track.style.animationDuration = `${Math.max(40, width / 70)}s`; // yaklaşık saniyede 70 piksel
+}
+
 function render() {
   const list = filtered();
   renderLayers();
   renderMarkers(list);
   renderList(list);
+  renderTicker(list);
   if (infoOpenFor && infoOpenFor !== 'iss' && byId.has(infoOpenFor)) openInfo(byId.get(infoOpenFor));
 }
 
@@ -972,12 +1118,17 @@ function applyLanguage() {
   $('infoTitle').textContent = T.details;
   $('layersBtn')?.setAttribute('title', T.tabs.layers);
   $('resetPanelsBtn')?.setAttribute('title', T.resetPanels);
+  $('basemapBtn')?.setAttribute('title', T.basemap);
+  renderBasemaps();
   $('inViewLabel').textContent = T.inView;
   $('newsLangLabel').textContent = T.newsLang;
   renderRegions();
   renderPanels();
   renderTopics();
   applyMapLanguage();
+  drawRegion();
+  $('tickerLabel').textContent = T.breaking;
+  tickerKey = '';
   render();
 }
 
@@ -1047,8 +1198,11 @@ $('ranges').addEventListener('click', (ev) => {
 $('regions').addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-region]');
   if (!b) return;
-  state.region = b.dataset.region;
+  // Seçili sekmeye tekrar tıklamak seçimi kaldırır (tüm bölge).
+  state.region = state.region === b.dataset.region ? 'all' : b.dataset.region;
   renderRegions();
+  drawRegion();
+  render();
   map.fitBounds(REGIONS[state.region], { padding: 30, duration: 1200 });
 });
 document.querySelector('.feed-tabs').addEventListener('click', (ev) => {
@@ -1064,6 +1218,10 @@ $('chips').addEventListener('change', (ev) => {
   if (k === 'aircraft' || k === 'mil') { lastMil = 0; updateAircraft(); }
   if (k === 'ships') drawMovers();
   render();
+});
+$('basemaps').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-basemap]');
+  if (b) setBasemap(b.dataset.basemap);
 });
 $('topics').addEventListener('click', (ev) => {
   const b = ev.target.closest('[data-topic]');
@@ -1101,8 +1259,13 @@ if (REGIONS[PARAMS.get('region')]) {
 } else if (state.topic === 'space') {
   map.jumpTo({ center: [20, 25], zoom: 1.2 });
 }
+// ?at=enlem,boylam,yakınlık — haritayı belli bir noktada açan paylaşılabilir bağlantı.
+const at = (PARAMS.get('at') || '').split(',').map(Number);
+if (at.length >= 2 && at.every(Number.isFinite)) map.jumpTo({ center: [at[1], at[0]], zoom: at[2] || 10 });
+if (BASEMAPS.includes(PARAMS.get('map'))) state.basemap = PARAMS.get('map');
 if (['lang', 'time', 'layers'].includes(PARAMS.get('panel'))) togglePanel(PARAMS.get('panel'));
 // Simgeler haritaya Tabler yazı tipinden çizildiği için önce yazı tipinin yüklenmesi beklenir.
+loadJson('data/regions.json').then((r) => { REGION_SHAPES = r || {}; drawRegion(); applyMapLanguage(); render(); });
 document.fonts.load('16px tabler-icons').finally(() => {
   applyLanguage();
   load();
