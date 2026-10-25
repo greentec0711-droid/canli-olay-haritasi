@@ -118,10 +118,12 @@ class ButtonsControl {
     el.className = 'maplibregl-ctrl maplibregl-ctrl-group';
     el.innerHTML = `<button id="layersBtn" type="button"><i class="ti ti-stack-2"></i></button>
       <button id="basemapBtn" type="button"><i class="ti ti-map-2"></i></button>
+      <button id="streetBtn" type="button"><i class="ti ti-360-view"></i></button>
       <button id="resetPanelsBtn" type="button"><i class="ti ti-layout-off"></i></button>`;
     el.querySelector('#layersBtn').addEventListener('click', () => togglePanel('layers'));
     // Harita türü düğmesi: koyu → uydu → arazi → koyu
     el.querySelector('#basemapBtn').addEventListener('click', () => setBasemap(BASEMAPS[(BASEMAPS.indexOf(state.basemap) + 1) % BASEMAPS.length]));
+    el.querySelector('#streetBtn').addEventListener('click', () => toggleStreetMode());
     el.querySelector('#resetPanelsBtn').addEventListener('click', resetPanels);
     return el;
   }
@@ -183,6 +185,7 @@ map.on('style.load', () => {
   applyMapLanguage();
   addEventLayers();
   addBaseLayers();
+  addStreetLayers();
   mapReady = true;
   drawRegion();
   setBasemap(state.basemap);
@@ -788,6 +791,117 @@ function shipHtml(s) {
     <a class="info-open" href="https://www.marinetraffic.com/en/ais/details/ships/mmsi:${esc(s.mmsi)}" target="_blank" rel="noopener"><i class="ti ti-external-link"></i> MarineTraffic</a>`;
 }
 
+// ---------------- Sokak fotoğrafları (Mapillary) ----------------
+// Gönüllülerin çektiği sokak fotoğrafları. Mod açıkken fotoğrafı olan sokaklar haritada yeşil çizilir;
+// tıklanınca o noktaya en yakın fotoğraf, içinde yürünebilen bir panelde açılır. Anahtar config.js'de.
+const MLY_TOKEN = (window.CONFIG?.MAPILLARY_TOKEN || '').trim();
+let streetMode = false, mlyViewer = null, mlyLib = null;
+const streetArrow = document.createElement('div');
+streetArrow.className = 'street-arrow';
+streetArrow.innerHTML = '<i class="ti ti-navigation"></i>';
+const streetMarker = new maplibregl.Marker({ element: streetArrow, rotationAlignment: 'map' });
+
+function addStreetLayers() {
+  if (!MLY_TOKEN) return;
+  map.addSource('mly', {
+    type: 'vector', minzoom: 6, maxzoom: 14,
+    tiles: [`https://tiles.mapillary.com/maps/vtp/mly1_public/2/{z}/{x}/{y}?access_token=${MLY_TOKEN}`],
+    attribution: 'Sokak fotoğrafları: © Mapillary',
+  });
+  map.addLayer({
+    id: 'mly-seq', type: 'line', source: 'mly', 'source-layer': 'sequence', layout: { visibility: 'none', 'line-cap': 'round' },
+    paint: { 'line-color': '#2bd44a', 'line-width': ['interpolate', ['linear'], ['zoom'], 6, 1.2, 14, 3.5], 'line-opacity': 0.85 },
+  }, 'clusters');
+  map.addLayer({
+    id: 'mly-img', type: 'circle', source: 'mly', 'source-layer': 'image', minzoom: 15, layout: { visibility: 'none' },
+    paint: { 'circle-radius': 3.5, 'circle-color': '#2bd44a', 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 1 },
+  }, 'clusters');
+  for (const id of ['mly-seq', 'mly-img']) {
+    map.on('click', id, (ev) => {
+      const imgId = ev.features[0].properties.id;
+      id === 'mly-img' && imgId ? openStreet(String(imgId)) : openStreetAt(ev.lngLat);
+    });
+    map.on('mouseenter', id, () => { map.getCanvas().style.cursor = 'pointer'; });
+    map.on('mouseleave', id, () => { map.getCanvas().style.cursor = ''; });
+  }
+}
+
+function toggleStreetMode(on = !streetMode) {
+  streetMode = on;
+  $('streetBtn')?.classList.toggle('active', on);
+  if (!MLY_TOKEN) { if (on) showStreetMsg(T.streetNoKey); streetMode = false; return; }
+  for (const id of ['mly-seq', 'mly-img']) if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', on ? 'visible' : 'none');
+  // Fotoğraflı sokaklar şehir ölçeğinde görünür: çok uzaktaysak yaklaş.
+  if (on && map.getZoom() < 6) map.flyTo({ zoom: 7, duration: 900 });
+  if (on) showStreetMsg(T.streetHint);
+  else closeStreet();
+}
+
+function showStreetMsg(text) {
+  const p = $('streetPanel');
+  p.hidden = false;
+  $('streetMsg').textContent = text;
+  $('streetMsg').hidden = false;
+  $('streetViewer').hidden = !mlyViewer;
+}
+
+function closeStreet() {
+  $('streetPanel').hidden = true;
+  streetMarker.remove();
+}
+
+// Tıklanan noktanın çevresindeki (yaklaşık 200 m) en yakın fotoğraf.
+async function openStreetAt(ll) {
+  const d = 0.002;
+  const url = `https://graph.mapillary.com/images?access_token=${MLY_TOKEN}&fields=id,computed_geometry&limit=50` +
+    `&bbox=${ll.lng - d},${ll.lat - d},${ll.lng + d},${ll.lat + d}`;
+  const j = await getJson(url);
+  const near = (j?.data || []).filter((x) => x.computed_geometry)
+    .map((x) => ({ id: x.id, dist: distKm(ll.lat, ll.lng, x.computed_geometry.coordinates[1], x.computed_geometry.coordinates[0]) }))
+    .sort((a, b) => a.dist - b.dist)[0];
+  if (near) openStreet(near.id); else showStreetMsg(T.streetNone);
+}
+
+async function openStreet(imageId) {
+  const p = $('streetPanel');
+  p.hidden = false;
+  p.classList.remove('collapsed');
+  $('streetMsg').hidden = true;
+  $('streetViewer').hidden = false;
+  if (!mlyLib) {
+    // Görüntüleyici (~1 MB) sadece ilk kullanımda indirilir.
+    const css = document.createElement('link');
+    css.rel = 'stylesheet';
+    css.href = 'https://cdn.jsdelivr.net/npm/mapillary-js@4.1.2/dist/mapillary.css';
+    document.head.appendChild(css);
+    await new Promise((res, rej) => {
+      const s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/mapillary-js@4.1.2/dist/mapillary.js';
+      s.onload = res;
+      s.onerror = rej;
+      document.head.appendChild(s);
+    });
+    mlyLib = window.mapillary;
+  }
+  if (!mlyViewer) {
+    mlyViewer = new mlyLib.Viewer({ accessToken: MLY_TOKEN, container: 'streetViewer', imageId, component: { cover: false } });
+    // Panelde yürüdükçe haritadaki ok da yürür ve bakılan yöne döner.
+    const sync = async () => {
+      try {
+        const pos = await mlyViewer.getPosition();
+        const bearing = await mlyViewer.getBearing();
+        streetMarker.setLngLat([pos.lng, pos.lat]).setRotation(bearing).addTo(map);
+      } catch {}
+    };
+    mlyViewer.on('position', sync);
+    mlyViewer.on('bearing', sync);
+    mlyViewer.on('image', sync);
+  } else {
+    mlyViewer.moveTo(imageId).catch(() => showStreetMsg(T.streetNone));
+  }
+  setTimeout(() => mlyViewer?.resize(), 50);
+}
+
 // ---------------- Yardımcılar ----------------
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -962,7 +1076,7 @@ function makePanel(panel) {
       panel.classList.toggle('collapsed');
       store.set(`panel:${panel.id}`, { ...(store.get(`panel:${panel.id}`) || {}), collapsed: panel.classList.contains('collapsed') });
     }
-    if (act === 'close') panel.id === 'infoPanel' ? closeInfo() : togglePanel('layers');
+    if (act === 'close') panel.id === 'infoPanel' ? closeInfo() : panel.id === 'streetPanel' ? closeStreet() : togglePanel('layers');
   });
 }
 
@@ -1119,6 +1233,8 @@ function applyLanguage() {
   $('layersBtn')?.setAttribute('title', T.tabs.layers);
   $('resetPanelsBtn')?.setAttribute('title', T.resetPanels);
   $('basemapBtn')?.setAttribute('title', T.basemap);
+  $('streetBtn')?.setAttribute('title', T.street);
+  $('streetTitle').textContent = T.street;
   renderBasemaps();
   $('inViewLabel').textContent = T.inView;
   $('newsLangLabel').textContent = T.newsLang;
@@ -1252,6 +1368,7 @@ window.addEventListener('resize', () => {
 
 makePanel($('infoPanel'));
 makePanel($('layersPanel'));
+makePanel($('streetPanel'));
 if (TOPICS[PARAMS.get('topic')]) state.topic = PARAMS.get('topic');
 if (REGIONS[PARAMS.get('region')]) {
   state.region = PARAMS.get('region');

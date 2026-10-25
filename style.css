@@ -213,3 +213,13 @@ select { font: inherit; border: 1px solid var(--line); border-radius: 6px; paddi
   padding: 3px 9px; cursor: pointer; font-size: 12px; }
 .basemaps button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 @media (max-width: 760px) { :root { --ticker-h: 32px; } .ticker-label { padding: 0 8px; font-size: 11px; } }
+
+/* Sokak fotoğrafları paneli ve haritadaki bakış oku */
+.street-panel { right: 12px; bottom: 16px; width: 560px; }
+[dir="rtl"] .street-panel { right: auto; left: 56px; }
+.street-body { padding: 0; }
+#streetViewer { position: relative; width: 100%; height: 340px; background: #000; }
+.street-msg { padding: 12px 14px; font-size: 13px; color: var(--muted); }
+.street-arrow { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #2bd44a; color: #fff;
+  border: 2px solid #fff; box-shadow: 0 2px 8px rgba(0,0,0,.5); font-size: 18px; }
+@media (max-width: 760px) { .street-panel { width: calc(100% - 24px); right: 12px; } #streetViewer { height: 240px; } }

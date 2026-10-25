@@ -31,6 +31,15 @@
         <div id="infoBody" class="panel-body"></div>
       </section>
 
+      <section id="streetPanel" class="panel street-panel" hidden>
+        <header class="panel-head">
+          <i class="ti ti-360-view"></i><span id="streetTitle"></span>
+          <button class="panel-btn" data-act="collapse" aria-label="−"><i class="ti ti-minus"></i></button>
+          <button class="panel-btn" data-act="close" aria-label="×"><i class="ti ti-x"></i></button>
+        </header>
+        <div class="panel-body street-body"><div id="streetViewer"></div><div id="streetMsg" class="street-msg"></div></div>
+      </section>
+
       <section id="layersPanel" class="panel layers-panel" hidden>
         <header class="panel-head">
           <i class="ti ti-stack-2"></i><span id="layersTitle"></span>
@@ -78,6 +87,7 @@
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/maplibre-gl@5.24.0/dist/maplibre-gl.js"></script>
+  <script src="config.js"></script>
   <script src="i18n.js"></script>
   <script src="data/places.js"></script>
   <script src="app.js"></script>
